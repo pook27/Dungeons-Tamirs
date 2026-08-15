@@ -94,11 +94,12 @@ void InitRooms() {
                 continue;
             }
 
-            room->enemySpawnCount = 1 + rand() % MAX_ROOM_ENEMIES;
+            int isBossRoom = (r == BOSS_ROOM_ROW && c == BOSS_ROOM_COL);
+            room->enemySpawnCount = isBossRoom ? MAX_ROOM_ENEMIES : 1 + rand() % MAX_ROOM_ENEMIES;
             for (int i = 0; i < room->enemySpawnCount; i++) {
                 room->enemySpawns[i].pos.x = (float)(60 + rand() % (WIDTH - 120));
                 room->enemySpawns[i].pos.y = (float)(60 + rand() % (HEIGHT - 120));
-                room->enemySpawns[i].elite = (rand() % 100 < ELITE_SPAWN_CHANCE);
+                room->enemySpawns[i].elite = isBossRoom ? 1 : (rand() % 100 < ELITE_SPAWN_CHANCE);
             }
         }
     }
@@ -639,6 +640,10 @@ void LoadRoom(Sprite** sprites_arr, Texture2D enemyTex, Texture2D potTex) {
     Room *room = &roomGrid[currentRoomRow][currentRoomCol];
     if (room->cleared) return; // already cleared - stays empty, door stays open
 
+    if (currentRoomRow == BOSS_ROOM_ROW && currentRoomCol == BOSS_ROOM_COL) {
+        SpawnPopupText("Boss Room!", sprites_arr[0]->x - 30.0f, sprites_arr[0]->y - 40.0f);
+    }
+
     for (int i = 0; i < room->enemySpawnCount && s_counter < 256; i++) {
         Sprite *enemy = malloc(sizeof(Sprite));
         EnemySpawn spawn = room->enemySpawns[i];
@@ -691,6 +696,29 @@ int TryChangeRoom(Sprite *player) {
     return 0;
 }
 
+// Wipes any in-flight sprites, respawns a fresh player, and regenerates the
+// dungeon - same setup the game already did once at boot, just reusable so
+// death doesn't require a process restart.
+void ResetGame(Sprite** sprites_arr, Texture2D birdTex, Texture2D enemyTex, Texture2D potTex) {
+    for (int i = 0; i < s_counter; i++) free(sprites_arr[i]);
+    s_counter = 0;
+
+    currentRoomRow = ROOM_GRID_ROWS / 2;
+    currentRoomCol = ROOM_GRID_COLS / 2;
+
+    Sprite *bird = malloc(sizeof(Sprite));
+    *bird = (Sprite){birdTex, WIDTH / 2.0f, HEIGHT / 2.0f, 0, 0, 0, 0, 1, PLAYER};
+    bird->hp = PLAYER_MAX_HP;
+    bird->maxhp = PLAYER_MAX_HP;
+    bird->level = 1;
+    bird->exp = 0;
+    bird->stats = (Stats){ MAX_MOVE_SPEED, 0, DASH_TIME, IFRAMES_DURATION, 0.0f, CONTACT_RADIUS_BONUS };
+    sprites_arr[s_counter++] = bird;
+
+    InitRooms();
+    LoadRoom(sprites_arr, enemyTex, potTex);
+}
+
 int main() {
     srand(time(NULL));
     Sprite *sprites[256];
@@ -710,32 +738,28 @@ int main() {
     Texture2D auraTex = LoadTexture("assets/aura.png");
 
     // 2. Assign the loaded textures to the structs
-    Sprite *bird = malloc(sizeof(Sprite));
-    *bird = (Sprite){birdtex, WIDTH / 2.0f, HEIGHT / 2.0f, 0, 0, 0, 0, 1, PLAYER};
-    bird->hp = PLAYER_MAX_HP;
-    bird->maxhp = PLAYER_MAX_HP;
-    bird->level = 1;
-    bird->exp = 0;
-    bird->stats = (Stats){ MAX_MOVE_SPEED, 0, DASH_TIME, IFRAMES_DURATION, 0.0f, CONTACT_RADIUS_BONUS };
-    sprites[s_counter++] = bird;
-
-    InitRooms();
-    LoadRoom(sprites, stickmantex, potTex);
+    ResetGame(sprites, birdtex, stickmantex, potTex);
+    Sprite *bird = sprites[0]; // sprites[0] is always the player (see CleanUpSprites)
 
     while(!WindowShouldClose()) {
-        Update(sprites, pickupTex);
-        CleanUpSprites(sprites);
+        if (bird->hp > 0) {
+            Update(sprites, pickupTex);
+            CleanUpSprites(sprites);
 
-        Room *room = &roomGrid[currentRoomRow][currentRoomCol];
-        UpdateDoors(sprites, room);
-        ResolveWallCollision(bird, room);
+            Room *room = &roomGrid[currentRoomRow][currentRoomCol];
+            UpdateDoors(sprites, room);
+            ResolveWallCollision(bird, room);
 
-        if (TryChangeRoom(bird)) {
-            LoadRoom(sprites, stickmantex, potTex);
+            if (TryChangeRoom(bird)) {
+                LoadRoom(sprites, stickmantex, potTex);
+            }
+            move(bird);
+            UpdatePopupTexts();
+            if (hitFlashTimer > 0) hitFlashTimer--;
+        } else if (IsKeyPressed(KEY_R)) {
+            ResetGame(sprites, birdtex, stickmantex, potTex);
+            bird = sprites[0];
         }
-        move(bird);
-        UpdatePopupTexts();
-        if (hitFlashTimer > 0) hitFlashTimer--;
 
         if (IsKeyPressed(KEY_TAB)) showDebugPanel = !showDebugPanel;
 
@@ -744,13 +768,16 @@ int main() {
         DrawRoom(&roomGrid[currentRoomRow][currentRoomCol], walltex, doorOpenTex, doorClosedTex);
         //drawing the sprites
         for (int i =0; i<s_counter; i++) {
+            DrawSprite(*sprites[i]);
+            if (sprites[i]->type == ENEMY) DrawHealthBar(*sprites[i]); //skip over player, pickups, and pots
+
             if (sprites[i]->type == PLAYER && sprites[i]->dashTimer > 0) {
                 float powerRatio = fminf((float)sprites[i]->stats.damage / 20.0f, 1.0f); 
-                float speedRatio = fminf((sprites[i]->stats.moveSpeed - MAX_MOVE_SPEED) / 10.0f, 1.0f);
+                float sizeRatio = fminf((sprites[i]->stats.dashRadius - MAX_MOVE_SPEED) / 10.0f, 1.0f);
 
                 // Scale the aura (grows taller much faster than it grows wide)
-                float scaleX = 1.0f + (speedRatio * 1.0f); 
-                float scaleY = 1.0f + (speedRatio * 3.0f);
+                float scaleX = 1.0f + (sizeRatio * 1.0f); 
+                float scaleY = 1.0f + (sizeRatio * 3.0f);
                 float destW = auraTex.width * scaleX;
                 float destH = auraTex.height * scaleY;
 
@@ -769,14 +796,18 @@ int main() {
 
                 DrawTexturePro(auraTex, srcRec, destRec, origin, rot, auraTint);
             }
-
-            DrawSprite(*sprites[i]);
-            if (sprites[i]->type == ENEMY) DrawHealthBar(*sprites[i]); //skip over player, pickups, and pots
         }
         DrawExpBar(bird);
         DrawHpBar(bird);
         DrawPopupTexts();
         if (hitFlashTimer > 0) DrawRectangle(0, 0, WIDTH, HEIGHT, Fade(WHITE, 0.5f * hitFlashTimer / HIT_FLASH_DURATION));
+        if (bird->hp <= 0) {
+            DrawRectangle(0, 0, WIDTH, HEIGHT, Fade(BLACK, 0.6f));
+            const char *msg = "GAME OVER";
+            const char *hint = "Press R to restart";
+            DrawText(msg, WIDTH / 2 - MeasureText(msg, 48) / 2, HEIGHT / 2 - 40, 48, RED);
+            DrawText(hint, WIDTH / 2 - MeasureText(hint, 20) / 2, HEIGHT / 2 + 20, 20, WHITE);
+        }
         if (showDebugPanel) DrawDebugPanel(bird);
         DrawFPS(10, HEIGHT - 20);
         EndDrawing();

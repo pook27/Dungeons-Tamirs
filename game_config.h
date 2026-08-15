@@ -35,6 +35,12 @@
 #define ROOM_TILE_COLS 15
 #define MAX_ROOM_ENEMIES 4    // cap on enemies spawned per room
 
+// Boss room: one fixed corner gets a full, all-elite pack instead of the
+// usual random count. Bottom-right corner - as far from the safe start
+// room as the 3x3 grid gets.
+#define BOSS_ROOM_ROW (ROOM_GRID_ROWS - 1)
+#define BOSS_ROOM_COL (ROOM_GRID_COLS - 1)
+
 // Elites / pickups
 #define ELITE_SPAWN_CHANCE 30 // percent chance a given enemy spawn point becomes elite
 #define ELITE_HP_MULTIPLIER 2 // elites have this many times normal enemy hp
