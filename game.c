@@ -129,6 +129,8 @@ static Room roomGrid[ROOM_GRID_ROWS][ROOM_GRID_COLS];
 static int currentRoomRow = ROOM_GRID_ROWS / 2;
 static int currentRoomCol = ROOM_GRID_COLS / 2;
 static int dungeonDepth = 0; // floors cleared so far this run - drives difficulty scaling below
+static int hitStopTimer = 0;
+static int screenShakeTimer = 0;
 
 // The center room is left enemy-free (and pre-cleared) so the player has a safe start.
 void InitRooms() {
@@ -402,7 +404,11 @@ void ApplyUpgrade(Sprite *player, int upgradeType) {
         case UPGRADE_DAMAGE:       stats->damage += UPGRADE_DAMAGE_AMOUNT; break;
         case UPGRADE_DASH_TIME:    stats->dashTime += UPGRADE_DASH_TIME_AMOUNT; break;
         case UPGRADE_IFRAMES:      stats->iframesMax += UPGRADE_IFRAMES_AMOUNT; break;
-        case UPGRADE_DODGE_CHANCE: stats->dodgeChance += UPGRADE_DODGE_CHANCE_AMOUNT; break;
+        case UPGRADE_DODGE_CHANCE:
+            stats->dodgeChance += UPGRADE_DODGE_CHANCE_AMOUNT;
+            // Cap dodge chance at 75% so the player never becomes immortal
+            if (stats->dodgeChance > 0.75f) stats->dodgeChance = 0.75f;
+            break;
         case UPGRADE_DASH_RADIUS:  stats->dashRadius += UPGRADE_DASH_RADIUS_AMOUNT; break;
         case UPGRADE_HEAL:
             player->hp += UPGRADE_HEAL_AMOUNT;
@@ -639,6 +645,16 @@ void Update(GameAssets *assets) {
                 if (WithinRadius(player, enemy, r) && enemy->iframes <= 0) {
                     enemy->hp -= (DASH_DAMAGE + player->stats.damage);
                     enemy->iframes = IFRAMES_DURATION;
+                    hitStopTimer = 4;       // Freeze the game physics for 4 frames
+                    screenShakeTimer = 10;  // Shake the screen for 10 frames
+                    
+                    float dx = enemy->x - player->x;
+                    float dy = enemy->y - player->y;
+                    float len = sqrtf(dx*dx + dy*dy);
+                    if (len > 0.01f) {
+                        enemy->vx = (dx / len) * 12.0f; 
+                        enemy->vy = (dy / len) * 12.0f;
+                    }
                     if (enemy->hp <= 0) {
                         enemy->active = 0;
                         hitFlashTimer = HIT_FLASH_DURATION;
@@ -866,14 +882,14 @@ void ResetGame(GameAssets *assets) {
     currentRoomCol = ROOM_GRID_COLS / 2;
     dungeonDepth = 0; // fresh run - back to floor 1 difficulty
 
-    Sprite *bird = &sprites[spriteCount++];
-    *bird = (Sprite){assets->player, WIDTH / 2.0f, HEIGHT / 2.0f, 0, 0, 0, 0, 1, PLAYER};
-    bird->hp = PLAYER_MAX_HP;
-    bird->maxhp = PLAYER_MAX_HP;
-    bird->level = 1;
-    bird->exp = 0;
-    bird->sizeMult = 1.0f;
-    bird->stats = (Stats){ MAX_MOVE_SPEED, 0, DASH_TIME, IFRAMES_DURATION, 0.0f, CONTACT_RADIUS_BONUS };
+    Sprite *player = &sprites[spriteCount++];
+    *player = (Sprite){assets->player, WIDTH / 2.0f, HEIGHT / 2.0f, 0, 0, 0, 0, 1, PLAYER};
+    player->hp = PLAYER_MAX_HP;
+    player->maxhp = PLAYER_MAX_HP;
+    player->level = 1;
+    player->exp = 0;
+    player->sizeMult = 1.0f;
+    player->stats = (Stats){ MAX_MOVE_SPEED, 0, DASH_TIME, IFRAMES_DURATION, 0.0f, CONTACT_RADIUS_BONUS };
 
     InitRooms();
     LoadRoom(assets);
@@ -892,21 +908,24 @@ int main() {
 
     // 2. Spawn the player and the starting dungeon
     ResetGame(&assets);
-    Sprite *bird = &sprites[0]; // sprites[0] is always the player (see CleanUpSprites)
+    Sprite *player = &sprites[0]; // sprites[0] is always the player (see CleanUpSprites)
 
     while(!WindowShouldClose()) {
-        if (bird->hp > 0) {
+        if (player->hp > 0) {
+            if (hitStopTimer > 0) {
+                hitStopTimer--;
+            } else {
             Update(&assets);
             CleanUpSprites();
 
             Room *room = &roomGrid[currentRoomRow][currentRoomCol];
             UpdateDoors(room);
-            ResolveWallCollision(bird, room);
+            ResolveWallCollision(player, room);
 
             // Whole floor cleared - descend instead of just running out of game.
             if (AllRoomsCleared()) {
                 dungeonDepth++;
-                SpawnPopupText(TextFormat("Floor: %d", dungeonDepth + 1), bird->x - 20.0f, bird->y - 40.0f);
+                SpawnPopupText(TextFormat("Floor: %d", dungeonDepth + 1), player->x - 20.0f, player->y - 40.0f);
                 
                 // Clear old floor's lingering items
                 for (int i = 0; i < spriteCount; i++) {
@@ -920,21 +939,37 @@ int main() {
                 LoadRoom(&assets);
             }
 
-            if (TryChangeRoom(bird)) {
+            if (TryChangeRoom(player)) {
                 LoadRoom(&assets);
             }
-            move(bird);
+            move(player);
+            }
             UpdatePopupTexts();
             if (hitFlashTimer > 0) hitFlashTimer--;
+            if (screenShakeTimer > 0) screenShakeTimer--;
         } else if (IsKeyPressed(KEY_R)) {
             ResetGame(&assets);
-            bird = &sprites[0];
+            player = &sprites[0];
         }
 
         if (IsKeyPressed(KEY_TAB)) showDebugPanel = !showDebugPanel;
 
         BeginDrawing();
         ClearBackground(RAYWHITE);
+        Camera2D camera = { 0 };
+        camera.target = (Vector2){ 0, 0 };
+        camera.zoom = 1.0f;
+        camera.rotation = 0.0f;
+        
+        if (screenShakeTimer > 0) {
+            camera.offset.x = (float)((rand() % 11) - 5); // Random shake between -5 to +5 pixels
+            camera.offset.y = (float)((rand() % 11) - 5);
+        } else {
+            camera.offset = (Vector2){ 0, 0 };
+        }
+        
+        // Begin rendering the game world through the shaking camera
+        BeginMode2D(camera);
         DrawTexture(assets.background, 0, 0, WHITE); // native res on purpose - no scaling to WIDTH/HEIGHT
         DrawRoom(&roomGrid[currentRoomRow][currentRoomCol], &assets);
         //drawing the sprites
@@ -973,11 +1008,12 @@ int main() {
             DrawSprite(*s);
             if (s->type == ENEMY) DrawHealthBar(*s); //skip over player, pickups, and pots
         }
-        DrawExpBar(bird);
-        DrawHpBar(bird);
+        EndMode2D();
+        DrawExpBar(player);
+        DrawHpBar(player);
         DrawPopupTexts();
         if (hitFlashTimer > 0) DrawRectangle(0, 0, WIDTH, HEIGHT, Fade(WHITE, 0.5f * hitFlashTimer / HIT_FLASH_DURATION));
-        if (bird->hp <= 0) {
+        if (player->hp <= 0) {
             DrawRectangle(0, 0, WIDTH, HEIGHT, Fade(BLACK, 0.6f));
             const char *msg = "GAME OVER";
             const char *hint = "Press R to restart";
@@ -988,7 +1024,7 @@ int main() {
             DrawTextEx(customFont, msg, (Vector2){ WIDTH / 2.0f - msgSize.x / 2.0f, HEIGHT / 2.0f - 40.0f }, 48.0f, 1.0f, RED);
             DrawTextEx(customFont, hint, (Vector2){ WIDTH / 2.0f - hintSize.x / 2.0f, HEIGHT / 2.0f + 20.0f }, 20.0f, 1.0f, WHITE);
         }
-        if (showDebugPanel) DrawDebugPanel(bird);
+        if (showDebugPanel) DrawDebugPanel(player);
         EndDrawing();
     }
 
