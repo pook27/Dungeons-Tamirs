@@ -26,7 +26,7 @@
 
 // Healing pots: chance to spawn one per (uncleared) room, breaks on contact
 #define POT_SPAWN_CHANCE 40 // percent
-#define POT_HEAL_AMOUNT 30  // scaled to the 100hp baseline, not the old 5hp one
+#define POT_HEAL_AMOUNT 30  // scaled to the 100hp baseline
 
 // Rooms
 #define ROOM_GRID_ROWS 3      // fixed grid of rooms, ROOM_GRID_ROWS x ROOM_GRID_COLS in size
@@ -34,6 +34,10 @@
 #define ROOM_TILE_ROWS 10     // each room is a ROOM_TILE_ROWS x ROOM_TILE_COLS grid of tiles
 #define ROOM_TILE_COLS 15
 #define MAX_ROOM_ENEMIES 4    // cap on enemies spawned per room
+
+// Sprite pool: hard cap on everything alive at once, across every room -
+// player + all enemies + pickups + pots, not just the current room's.
+#define MAX_SPRITES 256
 
 // Boss room: one fixed corner gets a full, all-elite pack instead of the
 // usual random count. Bottom-right corner - as far from the safe start
@@ -53,6 +57,23 @@
 #define ELITE_SPAWN_CHANCE 30 // percent chance a given enemy spawn point becomes elite
 #define ELITE_HP_MULTIPLIER 2 // elites have this many times normal enemy hp
 #define ELITE_DROP_CHANCE 100 // percent chance an elite drops a pickup on death (100 while testing)
+
+// Enemy variants: same shape as the elite system (a multiplier layered on
+// top of the ENEMY_MAX_HP/ENEMY_MAX_SPEED/CONTACT_DAMAGE baseline), just
+// keyed by variant instead of a boolean. Sprites are Tamir Shooter's own
+// ULTRA (fast/glass) and horny (slow/tank) enemies.
+#define ENEMY_FAST_HP_MULT 0.6f
+#define ENEMY_FAST_SPEED_MULT 2.0f
+#define ENEMY_FAST_DAMAGE_MULT 0.75f
+#define ENEMY_TANK_HP_MULT 2.5f
+#define ENEMY_TANK_SPEED_MULT 0.5f
+#define ENEMY_TANK_DAMAGE_MULT 1.5f
+
+// Boss: one dedicated spawn point per boss room instead of a pack of
+// reskinned elites - visibly and mechanically its own thing.
+#define BOSS_HP_MULTIPLIER 8      // on top of ENEMY_MAX_HP and depth scaling
+#define BOSS_SIZE_MULT 2.0f       // draw + hitbox scale
+#define BOSS_CONTACT_DAMAGE_MULT 2.0f
 
 // EXP / leveling - each level-up grants one random upgrade, same as a pickup
 #define EXP_PER_KILL 10

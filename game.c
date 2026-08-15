@@ -6,8 +6,6 @@
 
 #include "game_config.h"
 
-static int s_counter = 0;
-
 Font customFont;
 
 enum SpriteType {
@@ -38,17 +36,86 @@ enum UpgradeType {
     UPGRADE_TYPE_COUNT // sentinel - always last, used as the random pick range
 };
 
+// Enemy behavioral variants, stolen from Tamir Shooter's own tamr/horny/ULTRA
+// split. Orthogonal to `elite` (which is a difficulty/loot multiplier, not a
+// personality) - you can absolutely get an elite tank.
+enum EnemyVariant {
+    ENEMY_NORMAL,
+    ENEMY_FAST,
+    ENEMY_TANK,
+    ENEMY_VARIANT_COUNT
+};
+
+// All textures the game needs, loaded once at startup and freed once at
+// shutdown. Bundled so functions that need art (DrawRoom, LoadRoom,
+// ResetGame, SpawnPickup...) take one pointer instead of a fistful of individual Texture2D params.
+typedef struct {
+    Texture2D player;
+    Texture2D enemyVariants[ENEMY_VARIANT_COUNT]; // indexed by EnemyVariant
+    Texture2D boss;
+    Texture2D pot;
+    Texture2D aura;
+    Texture2D walls[3];
+    Texture2D doorOpen;
+    Texture2D doorClosed;
+    Texture2D upgradeIcons[UPGRADE_TYPE_COUNT]; // indexed by UpgradeType
+} GameAssets;
+
+GameAssets LoadGameAssets(void) {
+    GameAssets assets = {0};
+
+    assets.player = LoadTexture("assets/sheshbesh.png");
+
+    assets.enemyVariants[ENEMY_NORMAL] = LoadTexture("assets/tamir.png");
+    assets.enemyVariants[ENEMY_FAST]   = LoadTexture("assets/ULTRA.png");
+    assets.enemyVariants[ENEMY_TANK]   = LoadTexture("assets/horny.png");
+
+    assets.boss   = LoadTexture("assets/boss_tamir_shooter1.png");
+    assets.pot    = LoadTexture("assets/pot.png");
+    assets.aura   = LoadTexture("assets/aura.png");
+
+    assets.walls[0]   = LoadTexture("assets/wall.png");
+    assets.walls[1]   = LoadTexture("assets/wall2.png");
+    assets.walls[2]   = LoadTexture("assets/wall3.png");
+    assets.doorOpen   = LoadTexture("assets/door_open.png");
+    assets.doorClosed = LoadTexture("assets/door_closed.png");
+
+    assets.upgradeIcons[UPGRADE_MOVE_SPEED]   = LoadTexture("assets/speed_pwrp.png");
+    assets.upgradeIcons[UPGRADE_DAMAGE]       = LoadTexture("assets/damage_pwrp.png");
+    assets.upgradeIcons[UPGRADE_DASH_TIME]    = LoadTexture("assets/kendel.png");
+    assets.upgradeIcons[UPGRADE_IFRAMES]      = LoadTexture("assets/invinc.png");
+    assets.upgradeIcons[UPGRADE_DODGE_CHANCE] = LoadTexture("assets/dash_dodge.png");
+    assets.upgradeIcons[UPGRADE_DASH_RADIUS]  = LoadTexture("assets/charge.png");
+    assets.upgradeIcons[UPGRADE_HEAL]         = LoadTexture("assets/ugia.png");
+
+    return assets;
+}
+
+void UnloadGameAssets(GameAssets *assets) {
+    UnloadTexture(assets->player);
+    for (int i = 0; i < ENEMY_VARIANT_COUNT; i++) UnloadTexture(assets->enemyVariants[i]);
+    UnloadTexture(assets->boss);
+    UnloadTexture(assets->pot);
+    UnloadTexture(assets->aura);
+    for (int i = 0; i < 3; i++) UnloadTexture(assets->walls[i]);
+    UnloadTexture(assets->doorOpen);
+    UnloadTexture(assets->doorClosed);
+    for (int i = 0; i < UPGRADE_TYPE_COUNT; i++) UnloadTexture(assets->upgradeIcons[i]);
+}
+
 typedef struct {
     Vector2 pos;
     int elite;
+    int variant; // EnemyVariant - ignored for the boss spawn, which always uses assets->boss
+    int isBoss;
 } EnemySpawn;
 
 typedef struct {
     int tiles[ROOM_TILE_ROWS][ROOM_TILE_COLS];
     EnemySpawn enemySpawns[MAX_ROOM_ENEMIES];
     int enemySpawnCount;
-    int cleared; 
-    int visited; // NEW: tracks if the player has entered this room yet
+    int cleared;
+    int visited;
 } Room;
 
 static Room roomGrid[ROOM_GRID_ROWS][ROOM_GRID_COLS];
@@ -100,17 +167,36 @@ void InitRooms() {
 
             int isBossRoom = (r == BOSS_ROOM_ROW && c == BOSS_ROOM_COL);
 
-            // Floors get denser and eliter as depth increases, capped at a full room.
-            int minEnemies = 1 + dungeonDepth / DEPTH_ENEMIES_PER_FLOOR;
-            if (minEnemies > MAX_ROOM_ENEMIES) minEnemies = MAX_ROOM_ENEMIES;
-            int eliteChance = ELITE_SPAWN_CHANCE + dungeonDepth * DEPTH_ELITE_CHANCE_BONUS;
-            if (eliteChance > 100) eliteChance = 100;
+            if (isBossRoom) {
+                // One real boss, plus 0-2 regular adds for room presence -
+                // not a whole pack of reskinned elites.
+                room->enemySpawnCount = 1 + rand() % 3;
+                room->enemySpawns[0].pos = (Vector2){ WIDTH / 2.0f, HEIGHT / 2.0f };
+                room->enemySpawns[0].elite = 1;
+                room->enemySpawns[0].isBoss = 1;
+                room->enemySpawns[0].variant = ENEMY_NORMAL; // irrelevant - LoadRoom always uses assets->boss for isBoss
+                for (int i = 1; i < room->enemySpawnCount; i++) {
+                    room->enemySpawns[i].pos.x = (float)(60 + rand() % (WIDTH - 120));
+                    room->enemySpawns[i].pos.y = (float)(60 + rand() % (HEIGHT - 120));
+                    room->enemySpawns[i].elite = 0;
+                    room->enemySpawns[i].isBoss = 0;
+                    room->enemySpawns[i].variant = rand() % ENEMY_VARIANT_COUNT;
+                }
+            } else {
+                // Floors get denser and eliter as depth increases, capped at a full room.
+                int minEnemies = 1 + dungeonDepth / DEPTH_ENEMIES_PER_FLOOR;
+                if (minEnemies > MAX_ROOM_ENEMIES) minEnemies = MAX_ROOM_ENEMIES;
+                int eliteChance = ELITE_SPAWN_CHANCE + dungeonDepth * DEPTH_ELITE_CHANCE_BONUS;
+                if (eliteChance > 100) eliteChance = 100;
 
-            room->enemySpawnCount = isBossRoom ? MAX_ROOM_ENEMIES : minEnemies + rand() % (MAX_ROOM_ENEMIES - minEnemies + 1);
-            for (int i = 0; i < room->enemySpawnCount; i++) {
-                room->enemySpawns[i].pos.x = (float)(60 + rand() % (WIDTH - 120));
-                room->enemySpawns[i].pos.y = (float)(60 + rand() % (HEIGHT - 120));
-                room->enemySpawns[i].elite = isBossRoom ? 1 : (rand() % 100 < eliteChance);
+                room->enemySpawnCount = minEnemies + rand() % (MAX_ROOM_ENEMIES - minEnemies + 1);
+                for (int i = 0; i < room->enemySpawnCount; i++) {
+                    room->enemySpawns[i].pos.x = (float)(60 + rand() % (WIDTH - 120));
+                    room->enemySpawns[i].pos.y = (float)(60 + rand() % (HEIGHT - 120));
+                    room->enemySpawns[i].elite = (rand() % 100 < eliteChance);
+                    room->enemySpawns[i].isBoss = 0;
+                    room->enemySpawns[i].variant = rand() % ENEMY_VARIANT_COUNT;
+                }
             }
         }
     }
@@ -153,18 +239,18 @@ void DrawTile(Texture2D tex, int tx, int ty, float tileW, float tileH) {
     DrawTexturePro(tex, sourceRec, destRec, origin, TileRotationForSide(tx, ty), WHITE);
 }
 
-void DrawRoom(Room *room, Texture2D *wallTexs, Texture2D doorOpenTex, Texture2D doorClosedTex) {
+void DrawRoom(Room *room, GameAssets *assets) {
     float tileW = (float)WIDTH / ROOM_TILE_COLS;
     float tileH = (float)HEIGHT / ROOM_TILE_ROWS;
 
     for (int ty = 0; ty < ROOM_TILE_ROWS; ty++) {
         for (int tx = 0; tx < ROOM_TILE_COLS; tx++) {
             switch (room->tiles[ty][tx]) {
-                case TILE_WALL_1:      DrawTile(wallTexs[0], tx, ty, tileW, tileH); break;
-                case TILE_WALL_2:      DrawTile(wallTexs[1], tx, ty, tileW, tileH); break;
-                case TILE_WALL_3:      DrawTile(wallTexs[2], tx, ty, tileW, tileH); break;
-                case TILE_DOOR_OPEN:   DrawTile(doorOpenTex, tx, ty, tileW, tileH); break;
-                case TILE_DOOR_CLOSED: DrawTile(doorClosedTex, tx, ty, tileW, tileH); break;
+                case TILE_WALL_1:      DrawTile(assets->walls[0], tx, ty, tileW, tileH); break;
+                case TILE_WALL_2:      DrawTile(assets->walls[1], tx, ty, tileW, tileH); break;
+                case TILE_WALL_3:      DrawTile(assets->walls[2], tx, ty, tileW, tileH); break;
+                case TILE_DOOR_OPEN:   DrawTile(assets->doorOpen, tx, ty, tileW, tileH); break;
+                case TILE_DOOR_CLOSED: DrawTile(assets->doorClosed, tx, ty, tileW, tileH); break;
                 default: break; // TILE_FLOOR - nothing drawn, background shows through
             }
         }
@@ -204,6 +290,9 @@ typedef struct {
     int iframes; // frames of invincibility left; while >0, this sprite can't take another hit
 
     int elite;        // ENEMY only: tougher, tinted gold, guaranteed pickup drop
+    int variant;       // ENEMY only: EnemyVariant - speed/hp/damage profile
+    int isBoss;        // ENEMY only: the boss room's single dedicated spawn, not just another elite
+    float sizeMult;    // draw scale + collision radius multiplier, 1.0 for everything except the boss
     int upgradeType;   // PICKUP only: which UpgradeType this grants on collection
 
     int roomRow;
@@ -213,6 +302,12 @@ typedef struct {
     int exp;     // PLAYER only
     int level;   // PLAYER only
 } Sprite;
+
+// Flat, pre-allocated pool of every sprite in play (player, enemies,
+// pickups, pots). No malloc/free per-sprite: spawning just claims the next slot and despawning flags it inactive;
+// CleanUpSprites() compacts the array. sprites[0] is always the player and is never reordered out of that slot.
+static Sprite sprites[MAX_SPRITES];
+static int spriteCount = 0;
 
 const char *UpgradeName(int upgradeType) {
     switch (upgradeType) {
@@ -224,6 +319,33 @@ const char *UpgradeName(int upgradeType) {
         case UPGRADE_DASH_RADIUS:  return "+Dash Radius";
         case UPGRADE_HEAL:         return "+Heal";
         default: return "+???";
+    }
+}
+
+// Per-variant multipliers layered on top of the base ENEMY_MAX_SPEED/
+// ENEMY_MAX_HP/CONTACT_DAMAGE constants - same switch-on-enum idiom as
+// UpgradeName above, just for enemies instead of upgrades.
+float EnemySpeedMult(int variant) {
+    switch (variant) {
+        case ENEMY_FAST: return ENEMY_FAST_SPEED_MULT;
+        case ENEMY_TANK: return ENEMY_TANK_SPEED_MULT;
+        default: return 1.0f;
+    }
+}
+
+float EnemyHpMult(int variant) {
+    switch (variant) {
+        case ENEMY_FAST: return ENEMY_FAST_HP_MULT;
+        case ENEMY_TANK: return ENEMY_TANK_HP_MULT;
+        default: return 1.0f;
+    }
+}
+
+float EnemyDamageMult(int variant) {
+    switch (variant) {
+        case ENEMY_FAST: return ENEMY_FAST_DAMAGE_MULT;
+        case ENEMY_TANK: return ENEMY_TANK_DAMAGE_MULT;
+        default: return 1.0f;
     }
 }
 
@@ -287,8 +409,6 @@ int ExpNeededForLevel(int level) {
     return (int)(EXP_TO_LEVEL_BASE * powf(EXP_TO_LEVEL_GROWTH, (float)(level - 1)));
 }
 
-// Same upgrade pool and application as a pickup - leveling up is just an
-// automatic, no-choice pickup (Risk of Rain 2's model, not a pick-one menu).
 void GrantExp(Sprite *player, int amount) {
     player->exp += amount;
     while (player->exp >= ExpNeededForLevel(player->level)) {
@@ -301,7 +421,6 @@ void GrantExp(Sprite *player, int amount) {
 }
 
 float GetSpriteScale(Texture2D tex) {
-    // Target a width equivalent to one room tile, adapting automatically to the window size
     float targetW = (float)GetScreenWidth() / ROOM_TILE_COLS;
     return targetW / (float)tex.width;
 }
@@ -312,7 +431,7 @@ void DrawSprite(Sprite s) {
     float rotation = atan2f(s.vy , s.vx) * RAD2DEG;
     Vector2 position = { s.x, s.y };
 
-    float scale = GetSpriteScale(tex);
+    float scale = GetSpriteScale(tex) * s.sizeMult;
     float destW = (float)tex.width * scale;
     float destH = (float)tex.height * scale;
 
@@ -322,8 +441,7 @@ void DrawSprite(Sprite s) {
     Rectangle destRec   = { position.x, position.y, destW, destH };
 
     Color tint = WHITE;
-    if (s.type == ENEMY && s.elite) tint = Fade(GOLD, 0.6f + 0.4f * sinf(GetTime() * 6.0f)); // pulse so elites actually pop out of a crowd
-    if (s.type == POT) tint = BROWN; // reusing enemy art tinted, until real pot art shows up
+    if (s.type == ENEMY && s.elite) tint = GOLD;
     if (s.iframes > 0) tint = Fade(tint, 0.4f); // flicker while invincible, on top of any base tint
 
     DrawTexturePro(tex, sourceRec, destRec, origin, rotation, tint);
@@ -331,7 +449,7 @@ void DrawSprite(Sprite s) {
 
 // Small bar above a sprite's head, only shown once it has taken damage
 void DrawHealthBar(Sprite s) {
-    float scale = GetSpriteScale(s.texture);
+    float scale = GetSpriteScale(s.texture) * s.sizeMult;
     float destH = (float)s.texture.height * scale;
 
     float barWidth = 40.0f;
@@ -346,43 +464,33 @@ void DrawHealthBar(Sprite s) {
     DrawRectangle(x, y, barWidth * pct, barHeight, RED);
     DrawRectangleLines(x, y, barWidth, barHeight, BLACK);
 }
-void DrawHpBar(Sprite *player) {
+
+// Shared bar-and-label widget behind both the HP and EXP bars below - same
+// geometry and layout, just a different position/fill color/label.
+void DrawStatBar(float x, float y, float pct, Color fillColor, const char *label) {
     float barWidth = 200.0f;
     float barHeight = 16.0f;
-    float x = 10.0f;
-    float y = 10.0f;
-
-    float pct = (float)player->hp / (float)player->maxhp;
     if (pct < 0.0f) pct = 0.0f;
-
-    DrawRectangle(x, y, barWidth, barHeight, GRAY);
-    DrawRectangle(x, y, barWidth * pct, barHeight, RED);
-    DrawRectangleLines(x, y, barWidth, barHeight, BLACK);
-    
-    const char* hpText = TextFormat("Hp: %d", player->hp);
-    int textW = MeasureText(hpText, 16);
-    DrawRectangle((int)x - 2, (int)(y + barHeight + 2), textW + 4, 16, Fade(WHITE, 0.7f));
-    DrawTextEx(customFont, hpText, (Vector2){ x, y + barHeight + 2.0f }, 16.0f, 1.0f, BLACK);
-}
-
-void DrawExpBar(Sprite *player) {
-    float barWidth = 200.0f;
-    float barHeight = 16.0f;
-    float x = WIDTH - barWidth - 10.0f;
-    float y = 10.0f;
-
-    int needed = ExpNeededForLevel(player->level);
-    float pct = (float)player->exp / (float)needed;
     if (pct > 1.0f) pct = 1.0f;
 
     DrawRectangle(x, y, barWidth, barHeight, GRAY);
-    DrawRectangle(x, y, barWidth * pct, barHeight, SKYBLUE);
+    DrawRectangle(x, y, barWidth * pct, barHeight, fillColor);
     DrawRectangleLines(x, y, barWidth, barHeight, BLACK);
-    
-    const char* lvText = TextFormat("Lv: %d", player->level);
-    int textW = MeasureText(lvText, 16);
+
+    int textW = MeasureText(label, 16);
     DrawRectangle((int)x - 2, (int)(y + barHeight + 2), textW + 4, 16, Fade(WHITE, 0.7f));
-    DrawTextEx(customFont, lvText, (Vector2){ x, y + barHeight + 2.0f }, 16.0f, 1.0f, BLACK);
+    DrawTextEx(customFont, label, (Vector2){ x, y + barHeight + 2.0f }, 16.0f, 1.0f, BLACK);
+}
+
+void DrawHpBar(Sprite *player) {
+    float pct = (float)player->hp / (float)player->maxhp;
+    DrawStatBar(10.0f, 10.0f, pct, RED, TextFormat("Hp: %d", player->hp));
+}
+
+void DrawExpBar(Sprite *player) {
+    int needed = ExpNeededForLevel(player->level);
+    float pct = (float)player->exp / (float)needed;
+    DrawStatBar((float)WIDTH - 200.0f - 10.0f, 10.0f, pct, SKYBLUE, TextFormat("Lv: %d", player->level));
 }
 
 // TAB-toggled panel of the player's current stats, for testing upgrades
@@ -447,94 +555,109 @@ void move(Sprite *s) {
 // summed - so a hit actually matches how big the art looks, instead of a
 // flat number that has nothing to do with the sprites on screen.
 float ContactRadius(Sprite *a, Sprite *b) {
-    float aScaledW = (float)a->texture.width * GetSpriteScale(a->texture);
-    float bScaledW = (float)b->texture.width * GetSpriteScale(b->texture);
+    float aScaledW = (float)a->texture.width * GetSpriteScale(a->texture) * a->sizeMult;
+    float bScaledW = (float)b->texture.width * GetSpriteScale(b->texture) * b->sizeMult;
     return (aScaledW + bScaledW) / 4.0f;
 }
 
-void SpawnPickup(Sprite** sprites_arr, Texture2D *upgradeIcons, float x, float y) {
-    if (s_counter >= 256) return;
-    int upgradeType = rand() % UPGRADE_TYPE_COUNT;
-    Sprite *pickup = malloc(sizeof(Sprite));
-    *pickup = (Sprite){upgradeIcons[upgradeType], x, y, 0, 0, 0, 0, 1, PICKUP};
-    pickup->upgradeType = upgradeType;
-    pickup->roomRow = currentRoomRow; // Tag the item's location
-    pickup->roomCol = currentRoomCol;
-    sprites_arr[s_counter++] = pickup;
+// Squared-distance radius check - avoids a sqrtf per pair per frame, same
+// trick the original per-loop distSq checks used, just shared in one place
+// now that three different loops in Update() need it.
+int WithinRadius(Sprite *a, Sprite *b, float radius) {
+    float dx = a->x - b->x;
+    float dy = a->y - b->y;
+    return dx * dx + dy * dy < radius * radius;
 }
 
-void Update(Sprite** sprites_arr, Texture2D *upgradeIcons) {
-    for (int i = 0; i < s_counter; i++) {
-        if (!sprites_arr[i]->active) continue;
-        if (sprites_arr[i]->type != PLAYER && (sprites_arr[i]->roomRow != currentRoomRow || sprites_arr[i]->roomCol != currentRoomCol)) continue;
+// Shared filter for the three player-vs-X loops in Update(): is this sprite
+// the given type, alive, and in the room the player is currently standing in.
+int IsActiveInRoom(Sprite *s, int type) {
+    return s->type == type && s->active && s->roomRow == currentRoomRow && s->roomCol == currentRoomCol;
+}
 
-        // Swarm AI: constantly steer toward the player (sprites_arr[0], always
+void SpawnPickup(GameAssets *assets, float x, float y) {
+    if (spriteCount >= MAX_SPRITES) return;
+    int upgradeType = rand() % UPGRADE_TYPE_COUNT;
+    Sprite *pickup = &sprites[spriteCount++];
+    *pickup = (Sprite){assets->upgradeIcons[upgradeType], x, y, 0, 0, 0, 0, 1, PICKUP};
+    pickup->upgradeType = upgradeType;
+    pickup->sizeMult = 1.0f;
+    pickup->roomRow = currentRoomRow; // Tag the item's location
+    pickup->roomCol = currentRoomCol;
+}
+
+void Update(GameAssets *assets) {
+    for (int i = 0; i < spriteCount; i++) {
+        Sprite *s = &sprites[i];
+        if (!s->active) continue;
+        if (s->type != PLAYER && (s->roomRow != currentRoomRow || s->roomCol != currentRoomCol)) continue;
+
+        // Swarm AI: constantly steer toward the player (sprites[0], always
         // the player - see CleanUpSprites). Reuses the existing ax/ay fields
         // instead of adding anything new to Sprite.
-        if (sprites_arr[i]->type == ENEMY) {
-            float dx = sprites_arr[0]->x - sprites_arr[i]->x;
-            float dy = sprites_arr[0]->y - sprites_arr[i]->y;
+        if (s->type == ENEMY) {
+            float dx = sprites[0].x - s->x;
+            float dy = sprites[0].y - s->y;
             float len = sqrtf(dx*dx + dy*dy);
             if (len > 0.01f) {
-                sprites_arr[i]->ax = dx / len * ENEMY_CHASE_ACCEL;
-                sprites_arr[i]->ay = dy / len * ENEMY_CHASE_ACCEL;
+                s->ax = dx / len * ENEMY_CHASE_ACCEL * EnemySpeedMult(s->variant);
+                s->ay = dy / len * ENEMY_CHASE_ACCEL * EnemySpeedMult(s->variant);
             }
         }
 
         //do physics
-        sprites_arr[i]->vx = (sprites_arr[i]->vx + sprites_arr[i]->ax) * 0.99f;
-        sprites_arr[i]->vy = (sprites_arr[i]->vy + sprites_arr[i]->ay) * 0.99f;
+        s->vx = (s->vx + s->ax) * 0.99f;
+        s->vy = (s->vy + s->ay) * 0.99f;
 
-        if (sprites_arr[i]->type == ENEMY) {
-            float speed = sqrtf(sprites_arr[i]->vx * sprites_arr[i]->vx + sprites_arr[i]->vy * sprites_arr[i]->vy);
-            if (speed > ENEMY_MAX_SPEED) {
-                sprites_arr[i]->vx = sprites_arr[i]->vx / speed * ENEMY_MAX_SPEED;
-                sprites_arr[i]->vy = sprites_arr[i]->vy / speed * ENEMY_MAX_SPEED;
+        if (s->type == ENEMY) {
+            float speed = sqrtf(s->vx * s->vx + s->vy * s->vy);
+            float maxSpeed = ENEMY_MAX_SPEED * EnemySpeedMult(s->variant);
+            if (speed > maxSpeed) {
+                s->vx = s->vx / speed * maxSpeed;
+                s->vy = s->vy / speed * maxSpeed;
             }
         }
 
-        sprites_arr[i]->x += sprites_arr[i]->vx;
-        sprites_arr[i]->y += sprites_arr[i]->vy;
+        s->x += s->vx;
+        s->y += s->vy;
 
-        if (sprites_arr[i]->iframes > 0) sprites_arr[i]->iframes--;
+        if (s->iframes > 0) s->iframes--;
     }
 
     // Player vs enemy contact: dashing into an enemy hurts them (dash attack,
     // using the player's own dashRadius/damage stats), otherwise touching an
     // enemy hurts the player (subject to their dodge chance).
-    for (int i = 0; i < s_counter; i++) {
-        if (sprites_arr[i]->type != PLAYER || !sprites_arr[i]->active) continue;
+    for (int i = 0; i < spriteCount; i++) {
+        Sprite *player = &sprites[i];
+        if (player->type != PLAYER || !player->active) continue;
 
-        for (int j = 0; j < s_counter; j++) {
-            if (sprites_arr[j]->type != ENEMY || !sprites_arr[j]->active) continue;
-            if (sprites_arr[j]->roomRow != currentRoomRow || sprites_arr[j]->roomCol != currentRoomCol) continue;
+        for (int j = 0; j < spriteCount; j++) {
+            Sprite *enemy = &sprites[j];
+            if (!IsActiveInRoom(enemy, ENEMY)) continue;
 
-            float dx = sprites_arr[i]->x - sprites_arr[j]->x;
-            float dy = sprites_arr[i]->y - sprites_arr[j]->y;
-            float distSq = dx*dx + dy*dy; // squared distance - avoids a sqrtf per pair per frame
-
-            if (sprites_arr[i]->dashTimer > 0) {
-                float r = ContactRadius(sprites_arr[i], sprites_arr[j]) + sprites_arr[i]->stats.dashRadius;
-                if (distSq < r*r && sprites_arr[j]->iframes <= 0) {
-                    sprites_arr[j]->hp -= (DASH_DAMAGE + sprites_arr[i]->stats.damage);
-                    sprites_arr[j]->iframes = IFRAMES_DURATION;
-                    if (sprites_arr[j]->hp <= 0) {
-                        sprites_arr[j]->active = 0;
+            if (player->dashTimer > 0) {
+                float r = ContactRadius(player, enemy) + player->stats.dashRadius;
+                if (WithinRadius(player, enemy, r) && enemy->iframes <= 0) {
+                    enemy->hp -= (DASH_DAMAGE + player->stats.damage);
+                    enemy->iframes = IFRAMES_DURATION;
+                    if (enemy->hp <= 0) {
+                        enemy->active = 0;
                         hitFlashTimer = HIT_FLASH_DURATION;
-                        GrantExp(sprites_arr[i], EXP_PER_KILL);
-                        if (sprites_arr[j]->elite && (rand() % 100 < ELITE_DROP_CHANCE)) {
-                            SpawnPickup(sprites_arr, upgradeIcons, sprites_arr[j]->x, sprites_arr[j]->y);
+                        GrantExp(player, EXP_PER_KILL);
+                        if (enemy->elite && (rand() % 100 < ELITE_DROP_CHANCE)) {
+                            SpawnPickup(assets, enemy->x, enemy->y);
                         }
                     }
                 }
             } else {
-                float r = ContactRadius(sprites_arr[i], sprites_arr[j]) + CONTACT_RADIUS_BONUS;
-                if (distSq < r*r && sprites_arr[i]->iframes <= 0) {
-                    int dodged = ((float)rand() / (float)RAND_MAX) < sprites_arr[i]->stats.dodgeChance;
+                float r = ContactRadius(player, enemy) + CONTACT_RADIUS_BONUS;
+                if (WithinRadius(player, enemy, r) && player->iframes <= 0) {
+                    int dodged = ((float)rand() / (float)RAND_MAX) < player->stats.dodgeChance;
                     if (!dodged) {
-                        sprites_arr[i]->hp -= CONTACT_DAMAGE;
-                        sprites_arr[i]->iframes = sprites_arr[i]->stats.iframesMax;
-                        if (sprites_arr[i]->hp < 0) sprites_arr[i]->hp = 0;
+                        float dmgMult = enemy->isBoss ? BOSS_CONTACT_DAMAGE_MULT : EnemyDamageMult(enemy->variant);
+                        player->hp -= (int)(CONTACT_DAMAGE * dmgMult);
+                        player->iframes = player->stats.iframesMax;
+                        if (player->hp < 0) player->hp = 0;
                     }
                 }
             }
@@ -542,58 +665,48 @@ void Update(Sprite** sprites_arr, Texture2D *upgradeIcons) {
     }
 
     // Player vs pickup: touching one applies its upgrade immediately, no menu.
-    for (int i = 0; i < s_counter; i++) {
-        if (sprites_arr[i]->type != PLAYER || !sprites_arr[i]->active) continue;
-        for (int j = 0; j < s_counter; j++) {
-            if (sprites_arr[j]->type != PICKUP || !sprites_arr[j]->active) continue;
-            if (sprites_arr[j]->roomRow != currentRoomRow || sprites_arr[j]->roomCol != currentRoomCol) continue;
+    for (int i = 0; i < spriteCount; i++) {
+        Sprite *player = &sprites[i];
+        if (player->type != PLAYER || !player->active) continue;
 
-            float dx = sprites_arr[i]->x - sprites_arr[j]->x;
-            float dy = sprites_arr[i]->y - sprites_arr[j]->y;
-            float distSq = dx*dx + dy*dy;
+        for (int j = 0; j < spriteCount; j++) {
+            Sprite *pickup = &sprites[j];
+            if (!IsActiveInRoom(pickup, PICKUP)) continue;
 
-            if (distSq < PICKUP_RADIUS * PICKUP_RADIUS) {
-                ApplyUpgrade(sprites_arr[i], sprites_arr[j]->upgradeType);
-                SpawnPopupText(UpgradeName(sprites_arr[j]->upgradeType), sprites_arr[i]->x, sprites_arr[i]->y - 30.0f);
-                sprites_arr[j]->active = 0;
+            if (WithinRadius(player, pickup, PICKUP_RADIUS)) {
+                ApplyUpgrade(player, pickup->upgradeType);
+                SpawnPopupText(UpgradeName(pickup->upgradeType), player->x, player->y - 30.0f);
+                pickup->active = 0;
             }
         }
     }
 
     // Player vs pot: same shape as the pickup loop above, breaks on contact and heals.
-    for (int i = 0; i < s_counter; i++) {
-        if (sprites_arr[i]->type != PLAYER || !sprites_arr[i]->active) continue;
+    for (int i = 0; i < spriteCount; i++) {
+        Sprite *player = &sprites[i];
+        if (player->type != PLAYER || !player->active) continue;
 
-        for (int j = 0; j < s_counter; j++) {
-            if (sprites_arr[j]->type != POT || !sprites_arr[j]->active) continue;
-            if (sprites_arr[j]->roomRow != currentRoomRow || sprites_arr[j]->roomCol != currentRoomCol) continue;
+        for (int j = 0; j < spriteCount; j++) {
+            Sprite *pot = &sprites[j];
+            if (!IsActiveInRoom(pot, POT)) continue;
 
-            float dx = sprites_arr[i]->x - sprites_arr[j]->x;
-            float dy = sprites_arr[i]->y - sprites_arr[j]->y;
-            float distSq = dx*dx + dy*dy;
-
-            if (distSq < PICKUP_RADIUS * PICKUP_RADIUS) {
-                sprites_arr[i]->hp += POT_HEAL_AMOUNT;
-                if (sprites_arr[i]->hp > sprites_arr[i]->maxhp) sprites_arr[i]->hp = sprites_arr[i]->maxhp;
-                SpawnPopupText("+Heal", sprites_arr[i]->x, sprites_arr[i]->y - 30.0f);
-                sprites_arr[j]->active = 0;
+            if (WithinRadius(player, pot, PICKUP_RADIUS)) {
+                player->hp += POT_HEAL_AMOUNT;
+                if (player->hp > player->maxhp) player->hp = player->maxhp;
+                SpawnPopupText("+Heal", player->x, player->y - 30.0f);
+                pot->active = 0;
             }
         }
     }
 }
 
-void FreeSprites(Sprite** sprites_arr) {
-    for(int i=0; i<s_counter; i++) {
-        free(sprites_arr[i]);
-    }
-}
-
-void CleanUpSprites(Sprite** sprites_arr) {
-    for (int i = 0; i < s_counter; ) {
-        if (sprites_arr[i]->active == 0) {
-            free(sprites_arr[i]);
-            sprites_arr[i] = sprites_arr[s_counter - 1]; // swap in the last slot...
-            s_counter--;                                 // ...and pop it, instead of shifting everything down
+// Swap-and-pop compaction over the flat sprite array. No free() needed
+// anymore - despawned sprites are just plain structs getting overwritten.
+void CleanUpSprites(void) {
+    for (int i = 0; i < spriteCount; ) {
+        if (sprites[i].active == 0) {
+            sprites[i] = sprites[spriteCount - 1]; // swap in the last slot...
+            spriteCount--;                          // ...and pop it, instead of shifting everything down
         } else {
             i++; // only advance if we didn't just swap a new sprite into i
         }
@@ -643,11 +756,11 @@ void ResolveWallCollision(Sprite *s, Room *room) {
 
 // Once every enemy in the room is dead, swap any closed doors open and mark
 // the room cleared so LoadRoom stops respawning enemies into it.
-void UpdateDoors(Sprite** sprites_arr, Room *room) {
+void UpdateDoors(Room *room) {
     if (room->cleared) return;
 
-    for (int i = 0; i < s_counter; i++) {
-        if (sprites_arr[i]->type == ENEMY && sprites_arr[i]->active) return; // still enemies left
+    for (int i = 0; i < spriteCount; i++) {
+        if (sprites[i].type == ENEMY && sprites[i].active) return; // still enemies left
     }
 
     for (int ty = 0; ty < ROOM_TILE_ROWS; ty++) {
@@ -656,8 +769,8 @@ void UpdateDoors(Sprite** sprites_arr, Room *room) {
         }
     }
     room->cleared = 1;
-    // sprites_arr[0] is always the player (see CleanUpSprites - it's never reordered)
-    SpawnPopupText("Room Cleared!", sprites_arr[0]->x - 40.0f, sprites_arr[0]->y - 40.0f);
+    // sprites[0] is always the player (see CleanUpSprites - it's never reordered)
+    SpawnPopupText("Room Cleared!", sprites[0].x - 40.0f, sprites[0].y - 40.0f);
 }
 
 // True once every room in the grid (including the pre-cleared safe room) is
@@ -672,25 +785,25 @@ int AllRoomsCleared(void) {
     return 1;
 }
 
-void LoadRoom(Sprite** sprites_arr, Texture2D enemyTex, Texture2D bossTex, Texture2D potTex) {
+void LoadRoom(GameAssets *assets) {
     // Only clear enemies. Pickups and pots stay in memory!
-    for (int i = 0; i < s_counter; i++) {
-        if (sprites_arr[i]->type == ENEMY) sprites_arr[i]->active = 0;
+    for (int i = 0; i < spriteCount; i++) {
+        if (sprites[i].type == ENEMY) sprites[i].active = 0;
     }
-    CleanUpSprites(sprites_arr);
+    CleanUpSprites();
 
     Room *room = &roomGrid[currentRoomRow][currentRoomCol];
 
     // Spawn a pot only the first time we ever visit this room
     if (!room->visited) {
-        if (s_counter < 256 && rand() % 100 < POT_SPAWN_CHANCE) {
-            Sprite *pot = malloc(sizeof(Sprite));
+        if (spriteCount < MAX_SPRITES && rand() % 100 < POT_SPAWN_CHANCE) {
+            Sprite *pot = &sprites[spriteCount++];
             float px = (float)(60 + rand() % (WIDTH - 120));
             float py = (float)(60 + rand() % (HEIGHT - 120));
-            *pot = (Sprite){potTex, px, py, 0, 0, 0, 0, 1, POT};
+            *pot = (Sprite){assets->pot, px, py, 0, 0, 0, 0, 1, POT};
             pot->roomRow = currentRoomRow;
             pot->roomCol = currentRoomCol;
-            sprites_arr[s_counter++] = pot;
+            pot->sizeMult = 1.0f;
         }
         room->visited = 1;
     }
@@ -699,28 +812,29 @@ void LoadRoom(Sprite** sprites_arr, Texture2D enemyTex, Texture2D bossTex, Textu
 
     int isBossRoom = (currentRoomRow == BOSS_ROOM_ROW && currentRoomCol == BOSS_ROOM_COL);
     if (isBossRoom) {
-        SpawnPopupText("Boss Room!", sprites_arr[0]->x - 30.0f, sprites_arr[0]->y - 40.0f);
+        SpawnPopupText("Boss Room!", sprites[0].x - 30.0f, sprites[0].y - 40.0f);
     }
 
     float hpMult = powf(DEPTH_HP_GROWTH, (float)dungeonDepth);
-    for (int i = 0; i < room->enemySpawnCount && s_counter < 256; i++) {
-        Sprite *enemy = malloc(sizeof(Sprite));
+    for (int i = 0; i < room->enemySpawnCount && spriteCount < MAX_SPRITES; i++) {
+        Sprite *enemy = &sprites[spriteCount++];
         EnemySpawn spawn = room->enemySpawns[i];
-        *enemy = (Sprite){isBossRoom ? bossTex : enemyTex, spawn.pos.x, spawn.pos.y, 0, 0, 0, 0, 1, ENEMY};
+        Texture2D tex = spawn.isBoss ? assets->boss : assets->enemyVariants[spawn.variant];
+        *enemy = (Sprite){tex, spawn.pos.x, spawn.pos.y, 0, 0, 0, 0, 1, ENEMY};
         enemy->elite = spawn.elite;
-        enemy->maxhp = (int)(ENEMY_MAX_HP * (spawn.elite ? ELITE_HP_MULTIPLIER : 1) * hpMult);
+        enemy->variant = spawn.variant;
+        enemy->isBoss = spawn.isBoss;
+        enemy->sizeMult = spawn.isBoss ? BOSS_SIZE_MULT : 1.0f;
+        float eliteMult = spawn.elite ? ELITE_HP_MULTIPLIER : 1;
+        float bossMult = spawn.isBoss ? BOSS_HP_MULTIPLIER : 1;
+        enemy->maxhp = (int)(ENEMY_MAX_HP * EnemyHpMult(spawn.variant) * eliteMult * bossMult * hpMult);
         enemy->hp = enemy->maxhp;
         enemy->roomRow = currentRoomRow; 
         enemy->roomCol = currentRoomCol;
-        sprites_arr[s_counter++] = enemy;
     }
 }
 
 int TryChangeRoom(Sprite *player) {
-    // Landing exactly on the door tile (x=0/WIDTH) was the softlock: a room
-    // with enemies has ALL its doors closed, including the one you just
-    // walked through, so ResolveWallCollision shoved you right back out next
-    // frame. Step in past the wall thickness instead, onto real floor.
     float tileW = (float)WIDTH / ROOM_TILE_COLS;
     float tileH = (float)HEIGHT / ROOM_TILE_ROWS;
     float insetX = tileW * 1.5f;
@@ -749,79 +863,48 @@ int TryChangeRoom(Sprite *player) {
     return 0;
 }
 
-// Wipes any in-flight sprites, respawns a fresh player, and regenerates the
-// dungeon - same setup the game already did once at boot, just reusable so
-// death doesn't require a process restart.
-void ResetGame(Sprite** sprites_arr, Texture2D mizrahiTex, Texture2D enemyTex, Texture2D bossTex, Texture2D potTex) {
-    for (int i = 0; i < s_counter; i++) free(sprites_arr[i]);
-    s_counter = 0;
+void ResetGame(GameAssets *assets) {
+    spriteCount = 0; // sprites are plain structs now - no per-sprite free() needed
 
     currentRoomRow = ROOM_GRID_ROWS / 2;
     currentRoomCol = ROOM_GRID_COLS / 2;
     dungeonDepth = 0; // fresh run - back to floor 1 difficulty
 
-    Sprite *bird = malloc(sizeof(Sprite));
-    *bird = (Sprite){mizrahiTex, WIDTH / 2.0f, HEIGHT / 2.0f, 0, 0, 0, 0, 1, PLAYER};
+    Sprite *bird = &sprites[spriteCount++];
+    *bird = (Sprite){assets->player, WIDTH / 2.0f, HEIGHT / 2.0f, 0, 0, 0, 0, 1, PLAYER};
     bird->hp = PLAYER_MAX_HP;
     bird->maxhp = PLAYER_MAX_HP;
     bird->level = 1;
     bird->exp = 0;
+    bird->sizeMult = 1.0f;
     bird->stats = (Stats){ MAX_MOVE_SPEED, 0, DASH_TIME, IFRAMES_DURATION, 0.0f, CONTACT_RADIUS_BONUS };
-    sprites_arr[s_counter++] = bird;
 
     InitRooms();
-    LoadRoom(sprites_arr, enemyTex, bossTex, potTex);
+    LoadRoom(assets);
 }
 
 int main() {
     srand(time(NULL));
-    Sprite *sprites[256];
     int showDebugPanel = 0;
 
     InitWindow(WIDTH, HEIGHT, "Dungeons & Tamirs");
     SetTargetFPS(60);
 
     // 1. Load all textures ONCE at the start of the game
-    // Player/enemy/boss now point at the real Tamir Shooter art instead of
-    // the googled placeholders. Pots have no TS equivalent (healing is a
-    // mechanic unique to this game) so that one's untouched.
-    Texture2D mizrahiTex = LoadTexture("assets/sheshbesh.png");
-    Texture2D tamirTex = LoadTexture("assets/tamir.png");
-    Texture2D bosstex = LoadTexture("assets/boss_tamir_shooter1.png");
-    Texture2D wallTexs[3] = {
-        LoadTexture("assets/wall.png"),
-        LoadTexture("assets/wall2.png"),
-        LoadTexture("assets/wall3.png")
-    };
-    Texture2D doorOpenTex = LoadTexture("assets/door_open.png");
-    Texture2D doorClosedTex = LoadTexture("assets/door_closed.png");
-    Texture2D potTex = LoadTexture("assets/pot.png");
-    Texture2D auraTex = LoadTexture("assets/aura.png");
-
-    // Per-upgrade pickup icons, indexed by UpgradeType
-    Texture2D upgradeIcons[UPGRADE_TYPE_COUNT] = {
-        [UPGRADE_MOVE_SPEED]   = LoadTexture("assets/speed_pwrp.png"),
-        [UPGRADE_DAMAGE]       = LoadTexture("assets/damage_pwrp.png"),
-        [UPGRADE_DASH_TIME]    = LoadTexture("assets/charge.png"),
-        [UPGRADE_IFRAMES]      = LoadTexture("assets/invinc.png"),
-        [UPGRADE_DODGE_CHANCE] = LoadTexture("assets/teleport_pwrp.png"),
-        [UPGRADE_DASH_RADIUS]  = LoadTexture("assets/split.png"),
-        [UPGRADE_HEAL]         = LoadTexture("assets/leech.png"),
-    };
-
+    GameAssets assets = LoadGameAssets();
     customFont = LoadFont("assets/Good-Game.ttf");
 
-    // 2. Assign the loaded textures to the structs
-    ResetGame(sprites, mizrahiTex, tamirTex, bosstex, potTex);
-    Sprite *bird = sprites[0]; // sprites[0] is always the player (see CleanUpSprites)
+    // 2. Spawn the player and the starting dungeon
+    ResetGame(&assets);
+    Sprite *bird = &sprites[0]; // sprites[0] is always the player (see CleanUpSprites)
 
     while(!WindowShouldClose()) {
         if (bird->hp > 0) {
-            Update(sprites, upgradeIcons);
-            CleanUpSprites(sprites);
+            Update(&assets);
+            CleanUpSprites();
 
             Room *room = &roomGrid[currentRoomRow][currentRoomCol];
-            UpdateDoors(sprites, room);
+            UpdateDoors(room);
             ResolveWallCollision(bird, room);
 
             // Whole floor cleared - descend instead of just running out of game.
@@ -830,48 +913,49 @@ int main() {
                 SpawnPopupText(TextFormat("Floor: %d", dungeonDepth + 1), bird->x - 20.0f, bird->y - 40.0f);
                 
                 // Clear old floor's lingering items
-                for (int i = 0; i < s_counter; i++) {
-                    if (sprites[i]->type != PLAYER) sprites[i]->active = 0;
+                for (int i = 0; i < spriteCount; i++) {
+                    if (sprites[i].type != PLAYER) sprites[i].active = 0;
                 }
-                CleanUpSprites(sprites);
+                CleanUpSprites();
 
                 InitRooms();
                 currentRoomRow = ROOM_GRID_ROWS / 2;
                 currentRoomCol = ROOM_GRID_COLS / 2;
-                LoadRoom(sprites, tamirTex, bosstex, potTex);
+                LoadRoom(&assets);
             }
 
             if (TryChangeRoom(bird)) {
-                LoadRoom(sprites, tamirTex, bosstex, potTex);
+                LoadRoom(&assets);
             }
             move(bird);
             UpdatePopupTexts();
             if (hitFlashTimer > 0) hitFlashTimer--;
         } else if (IsKeyPressed(KEY_R)) {
-            ResetGame(sprites, mizrahiTex, tamirTex, bosstex, potTex);
-            bird = sprites[0];
+            ResetGame(&assets);
+            bird = &sprites[0];
         }
 
         if (IsKeyPressed(KEY_TAB)) showDebugPanel = !showDebugPanel;
 
         BeginDrawing();
         ClearBackground(RAYWHITE);
-        DrawRoom(&roomGrid[currentRoomRow][currentRoomCol], wallTexs, doorOpenTex, doorClosedTex);
+        DrawRoom(&roomGrid[currentRoomRow][currentRoomCol], &assets);
         //drawing the sprites
-        for (int i =0; i<s_counter; i++) {
-            if (!sprites[i]->active) continue;
-            if (sprites[i]->type != PLAYER && (sprites[i]->roomRow != currentRoomRow || sprites[i]->roomCol != currentRoomCol)) continue;
-            if (sprites[i]->type == PLAYER && sprites[i]->dashTimer > 0) {
-                float powerRatio = fminf((float)sprites[i]->stats.damage / 20.0f, 1.0f); 
-                float speedRatio = fminf((sprites[i]->stats.moveSpeed - MAX_MOVE_SPEED) / 10.0f, 1.0f);
+        for (int i = 0; i < spriteCount; i++) {
+            Sprite *s = &sprites[i];
+            if (!s->active) continue;
+            if (s->type != PLAYER && (s->roomRow != currentRoomRow || s->roomCol != currentRoomCol)) continue;
+            if (s->type == PLAYER && s->dashTimer > 0) {
+                float powerRatio = fminf((float)s->stats.damage / 20.0f, 1.0f); 
+                float sizeRatio = fminf(s->stats.dashRadius / 10.0f, 1.0f);
 
-                float baseScale = GetSpriteScale(auraTex);
+                float baseScale = GetSpriteScale(assets.aura);
 
                 // Scale the aura dynamically 
-                float scaleX = baseScale * (1.0f + (speedRatio * 1.0f)); 
-                float scaleY = baseScale * (1.0f + (speedRatio * 3.0f));
-                float destW = (float)auraTex.width * scaleX;
-                float destH = (float)auraTex.height * scaleY;
+                float scaleX = baseScale * (1.0f + (sizeRatio * 1.0f)); 
+                float scaleY = baseScale * (1.0f + (sizeRatio * 3.0f));
+                float destW = (float)assets.aura.width * scaleX;
+                float destH = (float)assets.aura.height * scaleY;
 
                 // Color tint shifts from a warm Yellow/Orange to an intense Blue/White as power goes up
                 unsigned char r = (unsigned char)(255 - (powerRatio * 50));
@@ -880,17 +964,17 @@ int main() {
                 unsigned char a = (unsigned char)(150 + (powerRatio * 80)); // Increases opacity with power
                 Color auraTint = { r, g, b, a };
 
-                float rot = atan2f(-sprites[i]->vy, -sprites[i]->vx) * RAD2DEG + 90.0f;
+                float rot = atan2f(-s->vy, -s->vx) * RAD2DEG + 90.0f;
 
-                Rectangle srcRec = { 0.0f, 0.0f, (float)auraTex.width, (float)auraTex.height };
-                Rectangle destRec = { sprites[i]->x, sprites[i]->y, destW, destH };
+                Rectangle srcRec = { 0.0f, 0.0f, (float)assets.aura.width, (float)assets.aura.height };
+                Rectangle destRec = { s->x, s->y, destW, destH };
                 Vector2 origin = { destW / 2.0f, destH / 2.0f };
 
-                DrawTexturePro(auraTex, srcRec, destRec, origin, rot, auraTint);
+                DrawTexturePro(assets.aura, srcRec, destRec, origin, rot, auraTint);
             }
 
-            DrawSprite(*sprites[i]);
-            if (sprites[i]->type == ENEMY) DrawHealthBar(*sprites[i]); //skip over player, pickups, and pots
+            DrawSprite(*s);
+            if (s->type == ENEMY) DrawHealthBar(*s); //skip over player, pickups, and pots
         }
         DrawExpBar(bird);
         DrawHpBar(bird);
@@ -912,18 +996,7 @@ int main() {
         EndDrawing();
     }
 
-    FreeSprites(sprites);
-
-    UnloadTexture(mizrahiTex);
-    UnloadTexture(tamirTex);
-    UnloadTexture(bosstex);
-    for (int i = 0; i < 3; i++) UnloadTexture(wallTexs[i]);
-    UnloadTexture(doorOpenTex);
-    UnloadTexture(doorClosedTex);
-    UnloadTexture(potTex);
-    UnloadTexture(auraTex);
-    for (int i = 0; i < UPGRADE_TYPE_COUNT; i++) UnloadTexture(upgradeIcons[i]);
-
+    UnloadGameAssets(&assets);
     CloseWindow();
 
     return 0;
