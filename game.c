@@ -204,7 +204,6 @@ void InitRooms() {
 
 // Directional tile textures (currently just doors) are authored facing
 // north/up. Rotate them to match whichever wall they're actually on.
-// If your art faces a different default direction, adjust the 0.0f here.
 float TileRotationForSide(int tx, int ty) {
     if (ty == 0) return 0.0f;                    // north wall
     if (ty == ROOM_TILE_ROWS - 1) return 180.0f;  // south wall
@@ -512,6 +511,7 @@ void DrawDebugPanel(Sprite *player) {
     y += lineHeight / 2;
     DrawTextEx(customFont, TextFormat("Room: (%d, %d)", currentRoomRow, currentRoomCol), (Vector2){ 10, y }, 16.0f, 1.0f, WHITE); y += lineHeight;
     DrawTextEx(customFont, TextFormat("Depth: %d", dungeonDepth), (Vector2){ 10, y }, 16.0f, 1.0f, WHITE); y += lineHeight;
+    DrawFPS(10, HEIGHT - 20);
 }
 
 void move(Sprite *s) {
@@ -992,7 +992,6 @@ int main() {
             DrawTextEx(customFont, hint, (Vector2){ WIDTH / 2.0f - hintSize.x / 2.0f, HEIGHT / 2.0f + 20.0f }, 20.0f, 1.0f, WHITE);
         }
         if (showDebugPanel) DrawDebugPanel(bird);
-        DrawFPS(10, HEIGHT - 20);
         EndDrawing();
     }
 
