@@ -8,6 +8,8 @@
 
 static int s_counter = 0;
 
+Font customFont;
+
 enum SpriteType {
     PLAYER,
     ENEMY,
@@ -17,7 +19,9 @@ enum SpriteType {
 
 enum TileType {
     TILE_FLOOR,
-    TILE_WALL,
+    TILE_WALL_1,
+    TILE_WALL_2,
+    TILE_WALL_3,
     TILE_DOOR_CLOSED, // blocks movement, like a wall, until the room's enemies are cleared
     TILE_DOOR_OPEN    // passable - stepping through one is what triggers a room change
 };
@@ -43,12 +47,14 @@ typedef struct {
     int tiles[ROOM_TILE_ROWS][ROOM_TILE_COLS];
     EnemySpawn enemySpawns[MAX_ROOM_ENEMIES];
     int enemySpawnCount;
-    int cleared; // once true, LoadRoom stops respawning enemies and the door stays open
+    int cleared; 
+    int visited; // NEW: tracks if the player has entered this room yet
 } Room;
 
 static Room roomGrid[ROOM_GRID_ROWS][ROOM_GRID_COLS];
 static int currentRoomRow = ROOM_GRID_ROWS / 2;
 static int currentRoomCol = ROOM_GRID_COLS / 2;
+static int dungeonDepth = 0; // floors cleared so far this run - drives difficulty scaling below
 
 // The center room is left enemy-free (and pre-cleared) so the player has a safe start.
 void InitRooms() {
@@ -59,17 +65,14 @@ void InitRooms() {
             for (int ty = 0; ty < ROOM_TILE_ROWS; ty++) {
                 for (int tx = 0; tx < ROOM_TILE_COLS; tx++) {
                     int isBorder = (tx == 0 || tx == ROOM_TILE_COLS - 1 || ty == 0 || ty == ROOM_TILE_ROWS - 1);
-                    room->tiles[ty][tx] = isBorder ? TILE_WALL : TILE_FLOOR;
+                    int randomWall = TILE_WALL_1 + (rand() % 3);
+                    room->tiles[ty][tx] = isBorder ? randomWall : TILE_FLOOR;
                 }
             }
 
             int isSafeRoom = (r == ROOM_GRID_ROWS / 2 && c == ROOM_GRID_COLS / 2);
             int doorTile = isSafeRoom ? TILE_DOOR_OPEN : TILE_DOOR_CLOSED;
 
-            // Two-tile-wide door per side that actually has a neighboring room
-            // (a single tile felt razor-thin to walk through). Punched through
-            // the middle of that wall - matches which directions TryChangeRoom()
-            // already allows crossing into.
             if (r > 0) {
                 room->tiles[0][ROOM_TILE_COLS / 2 - 1] = doorTile;
                 room->tiles[0][ROOM_TILE_COLS / 2] = doorTile;                                          // north
@@ -88,6 +91,7 @@ void InitRooms() {
             }
 
             room->cleared = isSafeRoom;
+            room->visited = isSafeRoom; // prevents pots from spawning in the start room
 
             if (isSafeRoom) {
                 room->enemySpawnCount = 0;
@@ -95,11 +99,18 @@ void InitRooms() {
             }
 
             int isBossRoom = (r == BOSS_ROOM_ROW && c == BOSS_ROOM_COL);
-            room->enemySpawnCount = isBossRoom ? MAX_ROOM_ENEMIES : 1 + rand() % MAX_ROOM_ENEMIES;
+
+            // Floors get denser and eliter as depth increases, capped at a full room.
+            int minEnemies = 1 + dungeonDepth / DEPTH_ENEMIES_PER_FLOOR;
+            if (minEnemies > MAX_ROOM_ENEMIES) minEnemies = MAX_ROOM_ENEMIES;
+            int eliteChance = ELITE_SPAWN_CHANCE + dungeonDepth * DEPTH_ELITE_CHANCE_BONUS;
+            if (eliteChance > 100) eliteChance = 100;
+
+            room->enemySpawnCount = isBossRoom ? MAX_ROOM_ENEMIES : minEnemies + rand() % (MAX_ROOM_ENEMIES - minEnemies + 1);
             for (int i = 0; i < room->enemySpawnCount; i++) {
                 room->enemySpawns[i].pos.x = (float)(60 + rand() % (WIDTH - 120));
                 room->enemySpawns[i].pos.y = (float)(60 + rand() % (HEIGHT - 120));
-                room->enemySpawns[i].elite = isBossRoom ? 1 : (rand() % 100 < ELITE_SPAWN_CHANCE);
+                room->enemySpawns[i].elite = isBossRoom ? 1 : (rand() % 100 < eliteChance);
             }
         }
     }
@@ -142,14 +153,16 @@ void DrawTile(Texture2D tex, int tx, int ty, float tileW, float tileH) {
     DrawTexturePro(tex, sourceRec, destRec, origin, TileRotationForSide(tx, ty), WHITE);
 }
 
-void DrawRoom(Room *room, Texture2D wallTex, Texture2D doorOpenTex, Texture2D doorClosedTex) {
+void DrawRoom(Room *room, Texture2D *wallTexs, Texture2D doorOpenTex, Texture2D doorClosedTex) {
     float tileW = (float)WIDTH / ROOM_TILE_COLS;
     float tileH = (float)HEIGHT / ROOM_TILE_ROWS;
 
     for (int ty = 0; ty < ROOM_TILE_ROWS; ty++) {
         for (int tx = 0; tx < ROOM_TILE_COLS; tx++) {
             switch (room->tiles[ty][tx]) {
-                case TILE_WALL:        DrawTile(wallTex, tx, ty, tileW, tileH); break;
+                case TILE_WALL_1:      DrawTile(wallTexs[0], tx, ty, tileW, tileH); break;
+                case TILE_WALL_2:      DrawTile(wallTexs[1], tx, ty, tileW, tileH); break;
+                case TILE_WALL_3:      DrawTile(wallTexs[2], tx, ty, tileW, tileH); break;
                 case TILE_DOOR_OPEN:   DrawTile(doorOpenTex, tx, ty, tileW, tileH); break;
                 case TILE_DOOR_CLOSED: DrawTile(doorClosedTex, tx, ty, tileW, tileH); break;
                 default: break; // TILE_FLOOR - nothing drawn, background shows through
@@ -192,6 +205,9 @@ typedef struct {
 
     int elite;        // ENEMY only: tougher, tinted gold, guaranteed pickup drop
     int upgradeType;   // PICKUP only: which UpgradeType this grants on collection
+
+    int roomRow;
+    int roomCol;
 
     Stats stats; // PLAYER only: current upgraded values
     int exp;     // PLAYER only
@@ -246,7 +262,7 @@ void DrawPopupTexts(void) {
     for (int i = 0; i < MAX_POPUP_TEXTS; i++) {
         if (popupTexts[i].timer <= 0) continue;
         float alpha = (float)popupTexts[i].timer / POPUP_TEXT_LIFETIME;
-        DrawText(popupTexts[i].text, (int)popupTexts[i].x, (int)popupTexts[i].y, 18, Fade(BLACK, alpha));
+        DrawTextEx(customFont, popupTexts[i].text, (Vector2){ popupTexts[i].x, popupTexts[i].y }, 18.0f, 1.0f, Fade(BLACK, alpha));
     }
 }
 
@@ -284,17 +300,10 @@ void GrantExp(Sprite *player, int amount) {
     }
 }
 
-Color UpgradeColor(int upgradeType) {
-    switch (upgradeType) {
-        case UPGRADE_MOVE_SPEED:   return SKYBLUE;
-        case UPGRADE_DAMAGE:       return RED;
-        case UPGRADE_DASH_TIME:    return ORANGE;
-        case UPGRADE_IFRAMES:      return LIME;
-        case UPGRADE_DODGE_CHANCE: return VIOLET;
-        case UPGRADE_DASH_RADIUS:  return GOLD;
-        case UPGRADE_HEAL:         return GREEN;
-        default: return WHITE;
-    }
+float GetSpriteScale(Texture2D tex) {
+    // Target a width equivalent to one room tile, adapting automatically to the window size
+    float targetW = (float)GetScreenWidth() / ROOM_TILE_COLS;
+    return targetW / (float)tex.width;
 }
 
 void DrawSprite(Sprite s) {
@@ -303,14 +312,17 @@ void DrawSprite(Sprite s) {
     float rotation = atan2f(s.vy , s.vx) * RAD2DEG;
     Vector2 position = { s.x, s.y };
 
-    Vector2 origin = { (float)tex.width / 2.0f, (float)tex.height / 2.0f }; 
+    float scale = GetSpriteScale(tex);
+    float destW = (float)tex.width * scale;
+    float destH = (float)tex.height * scale;
+
+    Vector2 origin = { destW / 2.0f, destH / 2.0f }; 
 
     Rectangle sourceRec = { 0.0f, 0.0f, (float)tex.width, (float)tex.height };
-    Rectangle destRec   = { position.x, position.y, (float)tex.width, (float)tex.height };
+    Rectangle destRec   = { position.x, position.y, destW, destH };
 
     Color tint = WHITE;
     if (s.type == ENEMY && s.elite) tint = Fade(GOLD, 0.6f + 0.4f * sinf(GetTime() * 6.0f)); // pulse so elites actually pop out of a crowd
-    if (s.type == PICKUP) tint = UpgradeColor(s.upgradeType);
     if (s.type == POT) tint = BROWN; // reusing enemy art tinted, until real pot art shows up
     if (s.iframes > 0) tint = Fade(tint, 0.4f); // flicker while invincible, on top of any base tint
 
@@ -319,11 +331,13 @@ void DrawSprite(Sprite s) {
 
 // Small bar above a sprite's head, only shown once it has taken damage
 void DrawHealthBar(Sprite s) {
+    float scale = GetSpriteScale(s.texture);
+    float destH = (float)s.texture.height * scale;
 
     float barWidth = 40.0f;
     float barHeight = 5.0f;
     float x = s.x - barWidth / 2.0f;
-    float y = s.y - (float)s.texture.height / 2.0f - 10.0f;
+    float y = s.y - destH / 2.0f - 10.0f; // dynamically hovers right above the scaled sprite
 
     float pct = (float)s.hp / (float)s.maxhp;
     if (pct < 0.0f) pct = 0.0f;
@@ -332,7 +346,6 @@ void DrawHealthBar(Sprite s) {
     DrawRectangle(x, y, barWidth * pct, barHeight, RED);
     DrawRectangleLines(x, y, barWidth, barHeight, BLACK);
 }
-// Top-left HP bar for player + hp number
 void DrawHpBar(Sprite *player) {
     float barWidth = 200.0f;
     float barHeight = 16.0f;
@@ -345,11 +358,13 @@ void DrawHpBar(Sprite *player) {
     DrawRectangle(x, y, barWidth, barHeight, GRAY);
     DrawRectangle(x, y, barWidth * pct, barHeight, RED);
     DrawRectangleLines(x, y, barWidth, barHeight, BLACK);
-    DrawText(TextFormat("Hp: %d", player->hp), (int)x, (int)(y + barHeight + 2), 16, BLACK);
+    
+    const char* hpText = TextFormat("Hp: %d", player->hp);
+    int textW = MeasureText(hpText, 16);
+    DrawRectangle((int)x - 2, (int)(y + barHeight + 2), textW + 4, 16, Fade(WHITE, 0.7f));
+    DrawTextEx(customFont, hpText, (Vector2){ x, y + barHeight + 2.0f }, 16.0f, 1.0f, BLACK);
 }
 
-
-// Top-right EXP bar + level number
 void DrawExpBar(Sprite *player) {
     float barWidth = 200.0f;
     float barHeight = 16.0f;
@@ -363,7 +378,11 @@ void DrawExpBar(Sprite *player) {
     DrawRectangle(x, y, barWidth, barHeight, GRAY);
     DrawRectangle(x, y, barWidth * pct, barHeight, SKYBLUE);
     DrawRectangleLines(x, y, barWidth, barHeight, BLACK);
-    DrawText(TextFormat("Lv: %d", player->level), (int)x, (int)(y + barHeight + 2), 16, BLACK);
+    
+    const char* lvText = TextFormat("Lv: %d", player->level);
+    int textW = MeasureText(lvText, 16);
+    DrawRectangle((int)x - 2, (int)(y + barHeight + 2), textW + 4, 16, Fade(WHITE, 0.7f));
+    DrawTextEx(customFont, lvText, (Vector2){ x, y + barHeight + 2.0f }, 16.0f, 1.0f, BLACK);
 }
 
 // TAB-toggled panel of the player's current stats, for testing upgrades
@@ -373,17 +392,18 @@ void DrawDebugPanel(Sprite *player) {
 
     int y = 10;
     int lineHeight = 18;
-    DrawText(TextFormat("HP: %d / %d", player->hp, player->maxhp), 10, y, 16, WHITE); y += lineHeight;
-    DrawText(TextFormat("Level %d  (%d/%d exp)", player->level, player->exp, ExpNeededForLevel(player->level)), 10, y, 16, WHITE); y += lineHeight;
+    DrawTextEx(customFont, TextFormat("HP: %d / %d", player->hp, player->maxhp), (Vector2){ 10, y }, 16.0f, 1.0f, WHITE); y += lineHeight;
+    DrawTextEx(customFont, TextFormat("Level %d  (%d/%d exp)", player->level, player->exp, ExpNeededForLevel(player->level)), (Vector2){ 10, y }, 16.0f, 1.0f, WHITE); y += lineHeight;
     y += lineHeight / 2;
-    DrawText(TextFormat("Move Speed: %.2f", player->stats.moveSpeed), 10, y, 16, WHITE); y += lineHeight;
-    DrawText(TextFormat("Dash Damage: %d + %d", DASH_DAMAGE, player->stats.damage), 10, y, 16, WHITE); y += lineHeight;
-    DrawText(TextFormat("Dash Time: %d frames", player->stats.dashTime), 10, y, 16, WHITE); y += lineHeight;
-    DrawText(TextFormat("Iframes: %d frames", player->stats.iframesMax), 10, y, 16, WHITE); y += lineHeight;
-    DrawText(TextFormat("Dodge Chance: %.0f%%", player->stats.dodgeChance * 100.0f), 10, y, 16, WHITE); y += lineHeight;
-    DrawText(TextFormat("Dash Radius Bonus: %.1f", player->stats.dashRadius), 10, y, 16, WHITE); y += lineHeight;
+    DrawTextEx(customFont, TextFormat("Move Speed: %.2f", player->stats.moveSpeed), (Vector2){ 10, y }, 16.0f, 1.0f, WHITE); y += lineHeight;
+    DrawTextEx(customFont, TextFormat("Dash Damage: %d + %d", DASH_DAMAGE, player->stats.damage), (Vector2){ 10, y }, 16.0f, 1.0f, WHITE); y += lineHeight;
+    DrawTextEx(customFont, TextFormat("Dash Time: %d frames", player->stats.dashTime), (Vector2){ 10, y }, 16.0f, 1.0f, WHITE); y += lineHeight;
+    DrawTextEx(customFont, TextFormat("Iframes: %d frames", player->stats.iframesMax), (Vector2){ 10, y }, 16.0f, 1.0f, WHITE); y += lineHeight;
+    DrawTextEx(customFont, TextFormat("Dodge Chance: %.0f%%", player->stats.dodgeChance * 100.0f), (Vector2){ 10, y }, 16.0f, 1.0f, WHITE); y += lineHeight;
+    DrawTextEx(customFont, TextFormat("Dash Radius Bonus: %.1f", player->stats.dashRadius), (Vector2){ 10, y }, 16.0f, 1.0f, WHITE); y += lineHeight;
     y += lineHeight / 2;
-    DrawText(TextFormat("Room: (%d, %d)", currentRoomRow, currentRoomCol), 10, y, 16, WHITE); y += lineHeight;
+    DrawTextEx(customFont, TextFormat("Room: (%d, %d)", currentRoomRow, currentRoomCol), (Vector2){ 10, y }, 16.0f, 1.0f, WHITE); y += lineHeight;
+    DrawTextEx(customFont, TextFormat("Depth: %d", dungeonDepth), (Vector2){ 10, y }, 16.0f, 1.0f, WHITE); y += lineHeight;
 }
 
 void move(Sprite *s) {
@@ -427,20 +447,26 @@ void move(Sprite *s) {
 // summed - so a hit actually matches how big the art looks, instead of a
 // flat number that has nothing to do with the sprites on screen.
 float ContactRadius(Sprite *a, Sprite *b) {
-    return ((float)a->texture.width + (float)b->texture.width) / 4.0f;
+    float aScaledW = (float)a->texture.width * GetSpriteScale(a->texture);
+    float bScaledW = (float)b->texture.width * GetSpriteScale(b->texture);
+    return (aScaledW + bScaledW) / 4.0f;
 }
 
-void SpawnPickup(Sprite** sprites_arr, Texture2D pickupTex, float x, float y) {
+void SpawnPickup(Sprite** sprites_arr, Texture2D *upgradeIcons, float x, float y) {
     if (s_counter >= 256) return;
+    int upgradeType = rand() % UPGRADE_TYPE_COUNT;
     Sprite *pickup = malloc(sizeof(Sprite));
-    *pickup = (Sprite){pickupTex, x, y, 0, 0, 0, 0, 1, PICKUP};
-    pickup->upgradeType = rand() % UPGRADE_TYPE_COUNT;
+    *pickup = (Sprite){upgradeIcons[upgradeType], x, y, 0, 0, 0, 0, 1, PICKUP};
+    pickup->upgradeType = upgradeType;
+    pickup->roomRow = currentRoomRow; // Tag the item's location
+    pickup->roomCol = currentRoomCol;
     sprites_arr[s_counter++] = pickup;
 }
 
-void Update(Sprite** sprites_arr, Texture2D pickupTex) {
+void Update(Sprite** sprites_arr, Texture2D *upgradeIcons) {
     for (int i = 0; i < s_counter; i++) {
         if (!sprites_arr[i]->active) continue;
+        if (sprites_arr[i]->type != PLAYER && (sprites_arr[i]->roomRow != currentRoomRow || sprites_arr[i]->roomCol != currentRoomCol)) continue;
 
         // Swarm AI: constantly steer toward the player (sprites_arr[0], always
         // the player - see CleanUpSprites). Reuses the existing ax/ay fields
@@ -481,6 +507,7 @@ void Update(Sprite** sprites_arr, Texture2D pickupTex) {
 
         for (int j = 0; j < s_counter; j++) {
             if (sprites_arr[j]->type != ENEMY || !sprites_arr[j]->active) continue;
+            if (sprites_arr[j]->roomRow != currentRoomRow || sprites_arr[j]->roomCol != currentRoomCol) continue;
 
             float dx = sprites_arr[i]->x - sprites_arr[j]->x;
             float dy = sprites_arr[i]->y - sprites_arr[j]->y;
@@ -496,7 +523,7 @@ void Update(Sprite** sprites_arr, Texture2D pickupTex) {
                         hitFlashTimer = HIT_FLASH_DURATION;
                         GrantExp(sprites_arr[i], EXP_PER_KILL);
                         if (sprites_arr[j]->elite && (rand() % 100 < ELITE_DROP_CHANCE)) {
-                            SpawnPickup(sprites_arr, pickupTex, sprites_arr[j]->x, sprites_arr[j]->y);
+                            SpawnPickup(sprites_arr, upgradeIcons, sprites_arr[j]->x, sprites_arr[j]->y);
                         }
                     }
                 }
@@ -517,9 +544,9 @@ void Update(Sprite** sprites_arr, Texture2D pickupTex) {
     // Player vs pickup: touching one applies its upgrade immediately, no menu.
     for (int i = 0; i < s_counter; i++) {
         if (sprites_arr[i]->type != PLAYER || !sprites_arr[i]->active) continue;
-
         for (int j = 0; j < s_counter; j++) {
             if (sprites_arr[j]->type != PICKUP || !sprites_arr[j]->active) continue;
+            if (sprites_arr[j]->roomRow != currentRoomRow || sprites_arr[j]->roomCol != currentRoomCol) continue;
 
             float dx = sprites_arr[i]->x - sprites_arr[j]->x;
             float dy = sprites_arr[i]->y - sprites_arr[j]->y;
@@ -539,6 +566,7 @@ void Update(Sprite** sprites_arr, Texture2D pickupTex) {
 
         for (int j = 0; j < s_counter; j++) {
             if (sprites_arr[j]->type != POT || !sprites_arr[j]->active) continue;
+            if (sprites_arr[j]->roomRow != currentRoomRow || sprites_arr[j]->roomCol != currentRoomCol) continue;
 
             float dx = sprites_arr[i]->x - sprites_arr[j]->x;
             float dy = sprites_arr[i]->y - sprites_arr[j]->y;
@@ -573,7 +601,7 @@ void CleanUpSprites(Sprite** sprites_arr) {
 }
 
 int IsBlockingTile(int tileType) {
-    return tileType == TILE_WALL || tileType == TILE_DOOR_CLOSED;
+    return tileType == TILE_WALL_1 || tileType == TILE_WALL_2 || tileType == TILE_WALL_3 || tileType == TILE_DOOR_CLOSED;
 }
 
 // Which tile occupies a given world position. Positions outside the room's
@@ -593,8 +621,10 @@ int TileTypeAt(Room *room, float worldX, float worldY) {
 // axis of movement if it's blocked. Reconstructs "before this frame" from
 // vx/vy since Update() already applied them straight to x/y.
 void ResolveWallCollision(Sprite *s, Room *room) {
-    float halfW = (float)s->texture.width / 2.0f;
-    float halfH = (float)s->texture.height / 2.0f;
+
+    float scale = GetSpriteScale(s->texture);
+    float halfW = ((float)s->texture.width * scale) / 2.0f;
+    float halfH = ((float)s->texture.height * scale) / 2.0f;
     float prevX = s->x - s->vx;
     float prevY = s->y - s->vy;
 
@@ -630,36 +660,59 @@ void UpdateDoors(Sprite** sprites_arr, Room *room) {
     SpawnPopupText("Room Cleared!", sprites_arr[0]->x - 40.0f, sprites_arr[0]->y - 40.0f);
 }
 
-void LoadRoom(Sprite** sprites_arr, Texture2D enemyTex, Texture2D potTex) {
-    // Leftover enemies, pots, and any uncollected pickups don't carry over between rooms
+// True once every room in the grid (including the pre-cleared safe room) is
+// cleared. Checked every frame after UpdateDoors - cheap (9 rooms) so no
+// need for a dirty flag.
+int AllRoomsCleared(void) {
+    for (int r = 0; r < ROOM_GRID_ROWS; r++) {
+        for (int c = 0; c < ROOM_GRID_COLS; c++) {
+            if (!roomGrid[r][c].cleared) return 0;
+        }
+    }
+    return 1;
+}
+
+void LoadRoom(Sprite** sprites_arr, Texture2D enemyTex, Texture2D bossTex, Texture2D potTex) {
+    // Only clear enemies. Pickups and pots stay in memory!
     for (int i = 0; i < s_counter; i++) {
-        if (sprites_arr[i]->type == ENEMY || sprites_arr[i]->type == PICKUP || sprites_arr[i]->type == POT) sprites_arr[i]->active = 0;
+        if (sprites_arr[i]->type == ENEMY) sprites_arr[i]->active = 0;
     }
     CleanUpSprites(sprites_arr);
 
     Room *room = &roomGrid[currentRoomRow][currentRoomCol];
+
+    // Spawn a pot only the first time we ever visit this room
+    if (!room->visited) {
+        if (s_counter < 256 && rand() % 100 < POT_SPAWN_CHANCE) {
+            Sprite *pot = malloc(sizeof(Sprite));
+            float px = (float)(60 + rand() % (WIDTH - 120));
+            float py = (float)(60 + rand() % (HEIGHT - 120));
+            *pot = (Sprite){potTex, px, py, 0, 0, 0, 0, 1, POT};
+            pot->roomRow = currentRoomRow;
+            pot->roomCol = currentRoomCol;
+            sprites_arr[s_counter++] = pot;
+        }
+        room->visited = 1;
+    }
+
     if (room->cleared) return; // already cleared - stays empty, door stays open
 
-    if (currentRoomRow == BOSS_ROOM_ROW && currentRoomCol == BOSS_ROOM_COL) {
+    int isBossRoom = (currentRoomRow == BOSS_ROOM_ROW && currentRoomCol == BOSS_ROOM_COL);
+    if (isBossRoom) {
         SpawnPopupText("Boss Room!", sprites_arr[0]->x - 30.0f, sprites_arr[0]->y - 40.0f);
     }
 
+    float hpMult = powf(DEPTH_HP_GROWTH, (float)dungeonDepth);
     for (int i = 0; i < room->enemySpawnCount && s_counter < 256; i++) {
         Sprite *enemy = malloc(sizeof(Sprite));
         EnemySpawn spawn = room->enemySpawns[i];
-        *enemy = (Sprite){enemyTex, spawn.pos.x, spawn.pos.y, 0, 0, 0, 0, 1, ENEMY};
+        *enemy = (Sprite){isBossRoom ? bossTex : enemyTex, spawn.pos.x, spawn.pos.y, 0, 0, 0, 0, 1, ENEMY};
         enemy->elite = spawn.elite;
-        enemy->maxhp = ENEMY_MAX_HP * (spawn.elite ? ELITE_HP_MULTIPLIER : 1);
+        enemy->maxhp = (int)(ENEMY_MAX_HP * (spawn.elite ? ELITE_HP_MULTIPLIER : 1) * hpMult);
         enemy->hp = enemy->maxhp;
+        enemy->roomRow = currentRoomRow; 
+        enemy->roomCol = currentRoomCol;
         sprites_arr[s_counter++] = enemy;
-    }
-
-    if (s_counter < 256 && rand() % 100 < POT_SPAWN_CHANCE) {
-        Sprite *pot = malloc(sizeof(Sprite));
-        float px = (float)(60 + rand() % (WIDTH - 120));
-        float py = (float)(60 + rand() % (HEIGHT - 120));
-        *pot = (Sprite){potTex, px, py, 0, 0, 0, 0, 1, POT};
-        sprites_arr[s_counter++] = pot;
     }
 }
 
@@ -699,15 +752,16 @@ int TryChangeRoom(Sprite *player) {
 // Wipes any in-flight sprites, respawns a fresh player, and regenerates the
 // dungeon - same setup the game already did once at boot, just reusable so
 // death doesn't require a process restart.
-void ResetGame(Sprite** sprites_arr, Texture2D birdTex, Texture2D enemyTex, Texture2D potTex) {
+void ResetGame(Sprite** sprites_arr, Texture2D mizrahiTex, Texture2D enemyTex, Texture2D bossTex, Texture2D potTex) {
     for (int i = 0; i < s_counter; i++) free(sprites_arr[i]);
     s_counter = 0;
 
     currentRoomRow = ROOM_GRID_ROWS / 2;
     currentRoomCol = ROOM_GRID_COLS / 2;
+    dungeonDepth = 0; // fresh run - back to floor 1 difficulty
 
     Sprite *bird = malloc(sizeof(Sprite));
-    *bird = (Sprite){birdTex, WIDTH / 2.0f, HEIGHT / 2.0f, 0, 0, 0, 0, 1, PLAYER};
+    *bird = (Sprite){mizrahiTex, WIDTH / 2.0f, HEIGHT / 2.0f, 0, 0, 0, 0, 1, PLAYER};
     bird->hp = PLAYER_MAX_HP;
     bird->maxhp = PLAYER_MAX_HP;
     bird->level = 1;
@@ -716,7 +770,7 @@ void ResetGame(Sprite** sprites_arr, Texture2D birdTex, Texture2D enemyTex, Text
     sprites_arr[s_counter++] = bird;
 
     InitRooms();
-    LoadRoom(sprites_arr, enemyTex, potTex);
+    LoadRoom(sprites_arr, enemyTex, bossTex, potTex);
 }
 
 int main() {
@@ -724,40 +778,77 @@ int main() {
     Sprite *sprites[256];
     int showDebugPanel = 0;
 
-    InitWindow(WIDTH, HEIGHT, "Game");
+    InitWindow(WIDTH, HEIGHT, "Dungeons & Tamirs");
     SetTargetFPS(60);
 
     // 1. Load all textures ONCE at the start of the game
-    Texture2D birdtex = LoadTexture("assets/bird.png");
-    Texture2D stickmantex = LoadTexture("assets/stickman.png");
-    Texture2D walltex = LoadTexture("assets/wall.png");
+    // Player/enemy/boss now point at the real Tamir Shooter art instead of
+    // the googled placeholders. Pots have no TS equivalent (healing is a
+    // mechanic unique to this game) so that one's untouched.
+    Texture2D mizrahiTex = LoadTexture("assets/sheshbesh.png");
+    Texture2D tamirTex = LoadTexture("assets/tamir.png");
+    Texture2D bosstex = LoadTexture("assets/boss_tamir_shooter1.png");
+    Texture2D wallTexs[3] = {
+        LoadTexture("assets/wall.png"),
+        LoadTexture("assets/wall2.png"),
+        LoadTexture("assets/wall3.png")
+    };
     Texture2D doorOpenTex = LoadTexture("assets/door_open.png");
     Texture2D doorClosedTex = LoadTexture("assets/door_closed.png");
-    Texture2D pickupTex = LoadTexture("assets/pickup.png");
     Texture2D potTex = LoadTexture("assets/pot.png");
     Texture2D auraTex = LoadTexture("assets/aura.png");
 
+    // Per-upgrade pickup icons, indexed by UpgradeType
+    Texture2D upgradeIcons[UPGRADE_TYPE_COUNT] = {
+        [UPGRADE_MOVE_SPEED]   = LoadTexture("assets/speed_pwrp.png"),
+        [UPGRADE_DAMAGE]       = LoadTexture("assets/damage_pwrp.png"),
+        [UPGRADE_DASH_TIME]    = LoadTexture("assets/charge.png"),
+        [UPGRADE_IFRAMES]      = LoadTexture("assets/invinc.png"),
+        [UPGRADE_DODGE_CHANCE] = LoadTexture("assets/teleport_pwrp.png"),
+        [UPGRADE_DASH_RADIUS]  = LoadTexture("assets/split.png"),
+        [UPGRADE_HEAL]         = LoadTexture("assets/leech.png"),
+    };
+
+    customFont = LoadFont("assets/Good-Game.ttf");
+
     // 2. Assign the loaded textures to the structs
-    ResetGame(sprites, birdtex, stickmantex, potTex);
+    ResetGame(sprites, mizrahiTex, tamirTex, bosstex, potTex);
     Sprite *bird = sprites[0]; // sprites[0] is always the player (see CleanUpSprites)
 
     while(!WindowShouldClose()) {
         if (bird->hp > 0) {
-            Update(sprites, pickupTex);
+            Update(sprites, upgradeIcons);
             CleanUpSprites(sprites);
 
             Room *room = &roomGrid[currentRoomRow][currentRoomCol];
             UpdateDoors(sprites, room);
             ResolveWallCollision(bird, room);
 
+            // Whole floor cleared - descend instead of just running out of game.
+            if (AllRoomsCleared()) {
+                dungeonDepth++;
+                SpawnPopupText(TextFormat("Floor: %d", dungeonDepth + 1), bird->x - 20.0f, bird->y - 40.0f);
+                
+                // Clear old floor's lingering items
+                for (int i = 0; i < s_counter; i++) {
+                    if (sprites[i]->type != PLAYER) sprites[i]->active = 0;
+                }
+                CleanUpSprites(sprites);
+
+                InitRooms();
+                currentRoomRow = ROOM_GRID_ROWS / 2;
+                currentRoomCol = ROOM_GRID_COLS / 2;
+                LoadRoom(sprites, tamirTex, bosstex, potTex);
+            }
+
             if (TryChangeRoom(bird)) {
-                LoadRoom(sprites, stickmantex, potTex);
+                LoadRoom(sprites, tamirTex, bosstex, potTex);
             }
             move(bird);
             UpdatePopupTexts();
             if (hitFlashTimer > 0) hitFlashTimer--;
         } else if (IsKeyPressed(KEY_R)) {
-            ResetGame(sprites, birdtex, stickmantex, potTex);
+            ResetGame(sprites, mizrahiTex, tamirTex, bosstex, potTex);
             bird = sprites[0];
         }
 
@@ -765,21 +856,22 @@ int main() {
 
         BeginDrawing();
         ClearBackground(RAYWHITE);
-        DrawRoom(&roomGrid[currentRoomRow][currentRoomCol], walltex, doorOpenTex, doorClosedTex);
+        DrawRoom(&roomGrid[currentRoomRow][currentRoomCol], wallTexs, doorOpenTex, doorClosedTex);
         //drawing the sprites
         for (int i =0; i<s_counter; i++) {
-            DrawSprite(*sprites[i]);
-            if (sprites[i]->type == ENEMY) DrawHealthBar(*sprites[i]); //skip over player, pickups, and pots
-
+            if (!sprites[i]->active) continue;
+            if (sprites[i]->type != PLAYER && (sprites[i]->roomRow != currentRoomRow || sprites[i]->roomCol != currentRoomCol)) continue;
             if (sprites[i]->type == PLAYER && sprites[i]->dashTimer > 0) {
                 float powerRatio = fminf((float)sprites[i]->stats.damage / 20.0f, 1.0f); 
-                float sizeRatio = fminf((sprites[i]->stats.dashRadius - MAX_MOVE_SPEED) / 10.0f, 1.0f);
+                float speedRatio = fminf((sprites[i]->stats.moveSpeed - MAX_MOVE_SPEED) / 10.0f, 1.0f);
 
-                // Scale the aura (grows taller much faster than it grows wide)
-                float scaleX = 1.0f + (sizeRatio * 1.0f); 
-                float scaleY = 1.0f + (sizeRatio * 3.0f);
-                float destW = auraTex.width * scaleX;
-                float destH = auraTex.height * scaleY;
+                float baseScale = GetSpriteScale(auraTex);
+
+                // Scale the aura dynamically 
+                float scaleX = baseScale * (1.0f + (speedRatio * 1.0f)); 
+                float scaleY = baseScale * (1.0f + (speedRatio * 3.0f));
+                float destW = (float)auraTex.width * scaleX;
+                float destH = (float)auraTex.height * scaleY;
 
                 // Color tint shifts from a warm Yellow/Orange to an intense Blue/White as power goes up
                 unsigned char r = (unsigned char)(255 - (powerRatio * 50));
@@ -796,6 +888,9 @@ int main() {
 
                 DrawTexturePro(auraTex, srcRec, destRec, origin, rot, auraTint);
             }
+
+            DrawSprite(*sprites[i]);
+            if (sprites[i]->type == ENEMY) DrawHealthBar(*sprites[i]); //skip over player, pickups, and pots
         }
         DrawExpBar(bird);
         DrawHpBar(bird);
@@ -805,8 +900,12 @@ int main() {
             DrawRectangle(0, 0, WIDTH, HEIGHT, Fade(BLACK, 0.6f));
             const char *msg = "GAME OVER";
             const char *hint = "Press R to restart";
-            DrawText(msg, WIDTH / 2 - MeasureText(msg, 48) / 2, HEIGHT / 2 - 40, 48, RED);
-            DrawText(hint, WIDTH / 2 - MeasureText(hint, 20) / 2, HEIGHT / 2 + 20, 20, WHITE);
+            
+            Vector2 msgSize = MeasureTextEx(customFont, msg, 48.0f, 1.0f);
+            Vector2 hintSize = MeasureTextEx(customFont, hint, 20.0f, 1.0f);
+            
+            DrawTextEx(customFont, msg, (Vector2){ WIDTH / 2.0f - msgSize.x / 2.0f, HEIGHT / 2.0f - 40.0f }, 48.0f, 1.0f, RED);
+            DrawTextEx(customFont, hint, (Vector2){ WIDTH / 2.0f - hintSize.x / 2.0f, HEIGHT / 2.0f + 20.0f }, 20.0f, 1.0f, WHITE);
         }
         if (showDebugPanel) DrawDebugPanel(bird);
         DrawFPS(10, HEIGHT - 20);
@@ -815,13 +914,15 @@ int main() {
 
     FreeSprites(sprites);
 
-    UnloadTexture(birdtex);
-    UnloadTexture(stickmantex);
-    UnloadTexture(walltex);
+    UnloadTexture(mizrahiTex);
+    UnloadTexture(tamirTex);
+    UnloadTexture(bosstex);
+    for (int i = 0; i < 3; i++) UnloadTexture(wallTexs[i]);
     UnloadTexture(doorOpenTex);
     UnloadTexture(doorClosedTex);
-    UnloadTexture(pickupTex);
+    UnloadTexture(potTex);
     UnloadTexture(auraTex);
+    for (int i = 0; i < UPGRADE_TYPE_COUNT; i++) UnloadTexture(upgradeIcons[i]);
 
     CloseWindow();
 

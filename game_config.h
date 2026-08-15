@@ -41,6 +41,14 @@
 #define BOSS_ROOM_ROW (ROOM_GRID_ROWS - 1)
 #define BOSS_ROOM_COL (ROOM_GRID_COLS - 1)
 
+// Dungeon depth: once every room on the current floor is cleared, the whole
+// grid regenerates one floor deeper instead of the game just ending. Small
+// per-floor growth that compounds - same shape as a roguelike boss-kill
+// scaling curve, just keyed off floor clears instead of boss kills.
+#define DEPTH_HP_GROWTH 1.15f      // enemy maxhp multiplier per floor depth
+#define DEPTH_ELITE_CHANCE_BONUS 5 // added to ELITE_SPAWN_CHANCE per floor (percentage points)
+#define DEPTH_ENEMIES_PER_FLOOR 2  // every N floors, the minimum enemy count per room goes up by 1
+
 // Elites / pickups
 #define ELITE_SPAWN_CHANCE 30 // percent chance a given enemy spawn point becomes elite
 #define ELITE_HP_MULTIPLIER 2 // elites have this many times normal enemy hp
