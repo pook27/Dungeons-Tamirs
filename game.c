@@ -53,8 +53,10 @@ typedef struct {
     Texture2D player;
     Texture2D enemyVariants[ENEMY_VARIANT_COUNT]; // indexed by EnemyVariant
     Texture2D boss;
+    Texture2D bossAlt; // pure reskin - same stats/AI, just a coin-flip look
     Texture2D pot;
     Texture2D aura;
+    Texture2D background;
     Texture2D walls[3];
     Texture2D doorOpen;
     Texture2D doorClosed;
@@ -70,9 +72,11 @@ GameAssets LoadGameAssets(void) {
     assets.enemyVariants[ENEMY_FAST]   = LoadTexture("assets/ULTRA.png");
     assets.enemyVariants[ENEMY_TANK]   = LoadTexture("assets/horny.png");
 
-    assets.boss   = LoadTexture("assets/boss_tamir_shooter1.png");
-    assets.pot    = LoadTexture("assets/pot.png");
-    assets.aura   = LoadTexture("assets/aura.png");
+    assets.boss    = LoadTexture("assets/boss_tamir_shooter1.png");
+    assets.bossAlt = LoadTexture("assets/boss_alternate.png");
+    assets.pot        = LoadTexture("assets/pot.png");
+    assets.aura        = LoadTexture("assets/aura.png");
+    assets.background = LoadTexture("assets/background.png");
 
     assets.walls[0]   = LoadTexture("assets/wall.png");
     assets.walls[1]   = LoadTexture("assets/wall2.png");
@@ -95,8 +99,10 @@ void UnloadGameAssets(GameAssets *assets) {
     UnloadTexture(assets->player);
     for (int i = 0; i < ENEMY_VARIANT_COUNT; i++) UnloadTexture(assets->enemyVariants[i]);
     UnloadTexture(assets->boss);
+    UnloadTexture(assets->bossAlt);
     UnloadTexture(assets->pot);
     UnloadTexture(assets->aura);
+    UnloadTexture(assets->background);
     for (int i = 0; i < 3; i++) UnloadTexture(assets->walls[i]);
     UnloadTexture(assets->doorOpen);
     UnloadTexture(assets->doorClosed);
@@ -106,8 +112,9 @@ void UnloadGameAssets(GameAssets *assets) {
 typedef struct {
     Vector2 pos;
     int elite;
-    int variant; // EnemyVariant - ignored for the boss spawn, which always uses assets->boss
+    int variant; // EnemyVariant - ignored for the boss spawn, which always uses assets->boss/bossAlt
     int isBoss;
+    int bossAlt; // isBoss only: pure reskin coin flip, no stat/AI difference
 } EnemySpawn;
 
 typedef struct {
@@ -174,7 +181,8 @@ void InitRooms() {
                 room->enemySpawns[0].pos = (Vector2){ WIDTH / 2.0f, HEIGHT / 2.0f };
                 room->enemySpawns[0].elite = 1;
                 room->enemySpawns[0].isBoss = 1;
-                room->enemySpawns[0].variant = ENEMY_NORMAL; // irrelevant - LoadRoom always uses assets->boss for isBoss
+                room->enemySpawns[0].variant = ENEMY_NORMAL; // irrelevant - LoadRoom always uses assets->boss/bossAlt for isBoss
+                room->enemySpawns[0].bossAlt = rand() % 2;
                 for (int i = 1; i < room->enemySpawnCount; i++) {
                     room->enemySpawns[i].pos.x = (float)(60 + rand() % (WIDTH - 120));
                     room->enemySpawns[i].pos.y = (float)(60 + rand() % (HEIGHT - 120));
@@ -552,25 +560,20 @@ void move(Sprite *s) {
 }
 
 // Approximate circle-collision radius: half of each sprite's texture width,
-// summed - so a hit actually matches how big the art looks, instead of a
-// flat number that has nothing to do with the sprites on screen.
 float ContactRadius(Sprite *a, Sprite *b) {
     float aScaledW = (float)a->texture.width * GetSpriteScale(a->texture) * a->sizeMult;
     float bScaledW = (float)b->texture.width * GetSpriteScale(b->texture) * b->sizeMult;
     return (aScaledW + bScaledW) / 4.0f;
 }
 
-// Squared-distance radius check - avoids a sqrtf per pair per frame, same
-// trick the original per-loop distSq checks used, just shared in one place
-// now that three different loops in Update() need it.
+// Squared-distance radius check - avoids a sqrtf per pair per frame
 int WithinRadius(Sprite *a, Sprite *b, float radius) {
     float dx = a->x - b->x;
     float dy = a->y - b->y;
     return dx * dx + dy * dy < radius * radius;
 }
 
-// Shared filter for the three player-vs-X loops in Update(): is this sprite
-// the given type, alive, and in the room the player is currently standing in.
+//  is this sprite the given type, alive, and in the room the player is currently standing in.
 int IsActiveInRoom(Sprite *s, int type) {
     return s->type == type && s->active && s->roomRow == currentRoomRow && s->roomCol == currentRoomCol;
 }
@@ -592,9 +595,7 @@ void Update(GameAssets *assets) {
         if (!s->active) continue;
         if (s->type != PLAYER && (s->roomRow != currentRoomRow || s->roomCol != currentRoomCol)) continue;
 
-        // Swarm AI: constantly steer toward the player (sprites[0], always
-        // the player - see CleanUpSprites). Reuses the existing ax/ay fields
-        // instead of adding anything new to Sprite.
+        // Swarm AI: constantly steer toward the player
         if (s->type == ENEMY) {
             float dx = sprites[0].x - s->x;
             float dy = sprites[0].y - s->y;
@@ -624,9 +625,7 @@ void Update(GameAssets *assets) {
         if (s->iframes > 0) s->iframes--;
     }
 
-    // Player vs enemy contact: dashing into an enemy hurts them (dash attack,
-    // using the player's own dashRadius/damage stats), otherwise touching an
-    // enemy hurts the player (subject to their dodge chance).
+    // Player vs enemy contact: dashing into an enemy hurts them
     for (int i = 0; i < spriteCount; i++) {
         Sprite *player = &sprites[i];
         if (player->type != PLAYER || !player->active) continue;
@@ -773,9 +772,6 @@ void UpdateDoors(Room *room) {
     SpawnPopupText("Room Cleared!", sprites[0].x - 40.0f, sprites[0].y - 40.0f);
 }
 
-// True once every room in the grid (including the pre-cleared safe room) is
-// cleared. Checked every frame after UpdateDoors - cheap (9 rooms) so no
-// need for a dirty flag.
 int AllRoomsCleared(void) {
     for (int r = 0; r < ROOM_GRID_ROWS; r++) {
         for (int c = 0; c < ROOM_GRID_COLS; c++) {
@@ -808,7 +804,7 @@ void LoadRoom(GameAssets *assets) {
         room->visited = 1;
     }
 
-    if (room->cleared) return; // already cleared - stays empty, door stays open
+    if (room->cleared) return;
 
     int isBossRoom = (currentRoomRow == BOSS_ROOM_ROW && currentRoomCol == BOSS_ROOM_COL);
     if (isBossRoom) {
@@ -819,7 +815,7 @@ void LoadRoom(GameAssets *assets) {
     for (int i = 0; i < room->enemySpawnCount && spriteCount < MAX_SPRITES; i++) {
         Sprite *enemy = &sprites[spriteCount++];
         EnemySpawn spawn = room->enemySpawns[i];
-        Texture2D tex = spawn.isBoss ? assets->boss : assets->enemyVariants[spawn.variant];
+        Texture2D tex = spawn.isBoss ? (spawn.bossAlt ? assets->bossAlt : assets->boss) : assets->enemyVariants[spawn.variant];
         *enemy = (Sprite){tex, spawn.pos.x, spawn.pos.y, 0, 0, 0, 0, 1, ENEMY};
         enemy->elite = spawn.elite;
         enemy->variant = spawn.variant;
@@ -939,6 +935,7 @@ int main() {
 
         BeginDrawing();
         ClearBackground(RAYWHITE);
+        DrawTexture(assets.background, 0, 0, WHITE); // native res on purpose - no scaling to WIDTH/HEIGHT
         DrawRoom(&roomGrid[currentRoomRow][currentRoomCol], &assets);
         //drawing the sprites
         for (int i = 0; i < spriteCount; i++) {
