@@ -10,6 +10,7 @@
 #define FRICTION 0.75f      // multiplier applied to vx/vy when that axis has no input
 #define DASH_SPEED 20.0f    // fixed speed set on dash, in whatever direction you're currently moving
 #define DASH_TIME 10        // starting frames the dash holds at full speed (~0.16s at 60fps)
+#define DASH_TIME_MAX 40    // hard cap on upgraded dash time - it's simultaneously mobility+offense+defense, so left uncapped it snowballs faster than any other stat
 
 // Health / damage (rescaled from a 0-5 baseline to 0-100 for finer-grained tuning)
 #define PLAYER_MAX_HP 100
@@ -17,6 +18,34 @@
 #define CONTACT_DAMAGE 20   // damage dealt to the player when an enemy touches them (not upgradeable)
 #define DASH_DAMAGE 1       // base damage dealt to an enemy when the player hits them while dashing
 #define IFRAMES_DURATION 30 // starting frames of invincibility after taking a hit (~0.5s at 60fps)
+#define DASH_KNOCKBACK_SPEED 7.0f  // speed imparted to an enemy on a successful dash hit
+#define ENEMY_STAGGER_DURATION 6   // frames an enemy's AI is suspended after a dash hit - short on purpose, this is a flinch, not a stun
+#define ENEMY_STAGGER_FRICTION 0.8f // per-frame velocity decay while staggered - knockback skids to a stop quickly rather than carrying far
+
+// Chaser (normal): unchanged constant homing, no extra tuning needed here.
+
+// Weaver (fast/ULTRA): homes in like a chaser but snakes side to side while
+// doing it, so it reads as erratic/hard-to-pin-down rather than a straight line.
+#define WEAVE_FREQUENCY 0.18f   // radians added to the weave phase per frame - higher = faster side-to-side
+#define WEAVE_AMPLITUDE 0.9f    // how far the weave pulls off a straight line toward the player, relative to the direct-approach accel
+
+// Charger (tank/horny): drifts in, stops at range to visibly wind up, then
+// commits to a straight dash at the player's position at that moment, then
+// recovers slow and open. Boss reuses the same state machine on its own tuning.
+#define TANK_CHARGE_RANGE 220.0f
+#define TANK_WINDUP_DURATION 35    // ~0.6s telegraph before the charge fires
+#define TANK_CHARGE_SPEED 8.0f
+#define TANK_CHARGE_DURATION 18
+#define TANK_RECOVER_DURATION 30   // slow and open - the punish window
+
+// Boss: same charger pattern as the tank, just longer-ranged, longer-telegraphed,
+// and hits harder/faster once it commits - the pattern is more readable but the
+// payoff (and punish window) is bigger.
+#define BOSS_CHARGE_RANGE 320.0f
+#define BOSS_WINDUP_DURATION 45
+#define BOSS_CHARGE_SPEED 10.0f
+#define BOSS_CHARGE_DURATION 24
+#define BOSS_RECOVER_DURATION 40
 #define CONTACT_RADIUS_BONUS 6.0f // leniency added on top of actual sprite size for contact/dash hits
 #define PICKUP_RADIUS 40.0f  // flat, generous radius for collecting pickups/pots (not tied to sprite size)
 
@@ -29,8 +58,8 @@
 #define POT_HEAL_AMOUNT 30  // scaled to the 100hp baseline
 
 // Rooms
-#define ROOM_GRID_ROWS 3      // fixed grid of rooms, ROOM_GRID_ROWS x ROOM_GRID_COLS in size
-#define ROOM_GRID_COLS 3
+#define ROOM_GRID_ROWS 5      // max grid of rooms a floor can occupy, ROOM_GRID_ROWS x ROOM_GRID_COLS in size -
+#define ROOM_GRID_COLS 5      // the actual per-floor layout is a randomly grown, connected subset of this grid (see GenerateFloorShape)
 #define ROOM_TILE_ROWS 10     // each room is a ROOM_TILE_ROWS x ROOM_TILE_COLS grid of tiles
 #define ROOM_TILE_COLS 15
 #define MAX_ROOM_ENEMIES 4    // cap on enemies spawned per room
@@ -39,11 +68,20 @@
 // player + all enemies + pickups + pots, not just the current room's.
 #define MAX_SPRITES 256
 
-// Boss room: one fixed corner gets a full, all-elite pack instead of the
-// usual random count. Bottom-right corner - as far from the safe start
-// room as the 3x3 grid gets.
-#define BOSS_ROOM_ROW (ROOM_GRID_ROWS - 1)
-#define BOSS_ROOM_COL (ROOM_GRID_COLS - 1)
+// Floor shape: each floor grows a random, connected blob of rooms out from
+// the center starting square (see GenerateFloorShape in game.c) until it
+// hits somewhere between these two room counts. The boss room is then
+// placed at whichever generated room ends up farthest from the start -
+// guaranteed reachable, and never the starting square itself.
+#define MIN_FLOOR_ROOMS 10
+#define MAX_FLOOR_ROOMS 16
+
+// Minimap: small semi-transparent floor overview, bottom-right corner.
+#define MINIMAP_CELL_SIZE 14.0f
+#define MINIMAP_CELL_GAP 2.0f
+#define MINIMAP_MARGIN 16.0f
+#define MINIMAP_PADDING 10.0f
+#define MINIMAP_BG_ALPHA 0.45f
 
 // Dungeon depth: once every room on the current floor is cleared, the whole
 // grid regenerates one floor deeper instead of the game just ending. Small

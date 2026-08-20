@@ -20,11 +20,10 @@ enum TileType {
     TILE_WALL_1,
     TILE_WALL_2,
     TILE_WALL_3,
-    TILE_DOOR_CLOSED, // blocks movement, like a wall, until the room's enemies are cleared
-    TILE_DOOR_OPEN    // passable - stepping through one is what triggers a room change
+    TILE_DOOR_CLOSED,
+    TILE_DOOR_OPEN
 };
 
-// The pool of stat upgrades pickups and level-ups both draw from.
 enum UpgradeType {
     UPGRADE_MOVE_SPEED,
     UPGRADE_DAMAGE,
@@ -33,12 +32,9 @@ enum UpgradeType {
     UPGRADE_DODGE_CHANCE,
     UPGRADE_DASH_RADIUS,
     UPGRADE_HEAL,
-    UPGRADE_TYPE_COUNT // sentinel - always last, used as the random pick range
+    UPGRADE_TYPE_COUNT
 };
 
-// Enemy behavioral variants, stolen from Tamir Shooter's own tamr/horny/ULTRA
-// split. Orthogonal to `elite` (which is a difficulty/loot multiplier, not a
-// personality) - you can absolutely get an elite tank.
 enum EnemyVariant {
     ENEMY_NORMAL,
     ENEMY_FAST,
@@ -46,14 +42,18 @@ enum EnemyVariant {
     ENEMY_VARIANT_COUNT
 };
 
-// All textures the game needs, loaded once at startup and freed once at
-// shutdown. Bundled so functions that need art (DrawRoom, LoadRoom,
-// ResetGame, SpawnPickup...) take one pointer instead of a fistful of individual Texture2D params.
+enum EnemyAIState {
+    AI_CHASE,   // closing the distance (or, for a charger, drifting into charge range)
+    AI_WINDUP,  // charger stops and telegraphs - see DrawSprite for the visual tell
+    AI_CHARGE,  // committed to a straight-line dash toward wherever the player was at windup's end
+    AI_RECOVER  // briefly slow and winded after a charge - the opening the player gets to punish
+};
+
 typedef struct {
     Texture2D player;
     Texture2D enemyVariants[ENEMY_VARIANT_COUNT]; // indexed by EnemyVariant
     Texture2D boss;
-    Texture2D bossAlt; // pure reskin - same stats/AI, just a coin-flip look
+    Texture2D bossAlt;
     Texture2D pot;
     Texture2D aura;
     Texture2D background;
@@ -123,20 +123,102 @@ typedef struct {
     int enemySpawnCount;
     int cleared;
     int visited;
+    int exists; // whether this cell is part of the current floor's generated shape (see GenerateFloorShape) - if not, it's never entered, drawn, or counted
 } Room;
 
 static Room roomGrid[ROOM_GRID_ROWS][ROOM_GRID_COLS];
 static int currentRoomRow = ROOM_GRID_ROWS / 2;
 static int currentRoomCol = ROOM_GRID_COLS / 2;
+static int bossRoomRow = ROOM_GRID_ROWS / 2; // recomputed by GenerateFloorShape each floor - init value is overwritten before first use
+static int bossRoomCol = ROOM_GRID_COLS / 2;
 static int dungeonDepth = 0; // floors cleared so far this run - drives difficulty scaling below
 static int hitStopTimer = 0;
 static int screenShakeTimer = 0;
 
-// The center room is left enemy-free (and pre-cleared) so the player has a safe start.
+static int pendingLevelUps = 0;
+static int awaitingUpgradeChoice = 0;
+static int upgradeChoices[3];
+
+typedef struct { int r, c; } RoomCoord;
+
+void GenerateFloorShape(void) {
+    for (int r = 0; r < ROOM_GRID_ROWS; r++)
+        for (int c = 0; c < ROOM_GRID_COLS; c++)
+            roomGrid[r][c].exists = 0;
+
+    int startR = ROOM_GRID_ROWS / 2;
+    int startC = ROOM_GRID_COLS / 2;
+    roomGrid[startR][startC].exists = 1;
+
+    RoomCoord existingList[ROOM_GRID_ROWS * ROOM_GRID_COLS];
+    int existingCount = 0;
+    existingList[existingCount++] = (RoomCoord){ startR, startC };
+
+    int maxPossibleRooms = ROOM_GRID_ROWS * ROOM_GRID_COLS;
+    int cap = (MAX_FLOOR_ROOMS < maxPossibleRooms) ? MAX_FLOOR_ROOMS : maxPossibleRooms;
+    int targetRooms = MIN_FLOOR_ROOMS + rand() % (cap - MIN_FLOOR_ROOMS + 1);
+
+    static const int dr[4] = { -1, 1, 0, 0 };
+    static const int dc[4] = { 0, 0, -1, 1 };
+
+    int guard = 0;
+    while (existingCount < targetRooms && guard++ < 4000) {
+        RoomCoord from = existingList[rand() % existingCount];
+        int dir = rand() % 4;
+        int nr = from.r + dr[dir];
+        int nc = from.c + dc[dir];
+        if (nr < 0 || nr >= ROOM_GRID_ROWS || nc < 0 || nc >= ROOM_GRID_COLS) continue;
+        if (roomGrid[nr][nc].exists) continue;
+
+        roomGrid[nr][nc].exists = 1;
+        existingList[existingCount++] = (RoomCoord){ nr, nc };
+    }
+
+    int dist[ROOM_GRID_ROWS][ROOM_GRID_COLS];
+    for (int r = 0; r < ROOM_GRID_ROWS; r++)
+        for (int c = 0; c < ROOM_GRID_COLS; c++)
+            dist[r][c] = -1;
+
+    RoomCoord queue[ROOM_GRID_ROWS * ROOM_GRID_COLS];
+    int qHead = 0, qTail = 0;
+    dist[startR][startC] = 0;
+    queue[qTail++] = (RoomCoord){ startR, startC };
+
+    RoomCoord farthest = { startR, startC };
+    int farthestDist = 0;
+
+    while (qHead < qTail) {
+        RoomCoord cur = queue[qHead++];
+        for (int dir = 0; dir < 4; dir++) {
+            int nr = cur.r + dr[dir];
+            int nc = cur.c + dc[dir];
+            if (nr < 0 || nr >= ROOM_GRID_ROWS || nc < 0 || nc >= ROOM_GRID_COLS) continue;
+            if (!roomGrid[nr][nc].exists || dist[nr][nc] != -1) continue;
+
+            dist[nr][nc] = dist[cur.r][cur.c] + 1;
+            queue[qTail++] = (RoomCoord){ nr, nc };
+            if (dist[nr][nc] > farthestDist) {
+                farthestDist = dist[nr][nc];
+                farthest = (RoomCoord){ nr, nc };
+            }
+        }
+    }
+
+    bossRoomRow = farthest.r;
+    bossRoomCol = farthest.c;
+}
+
 void InitRooms() {
+    GenerateFloorShape();
+
     for (int r = 0; r < ROOM_GRID_ROWS; r++) {
         for (int c = 0; c < ROOM_GRID_COLS; c++) {
             Room *room = &roomGrid[r][c];
+            room->cleared = 0;
+            room->visited = 0;
+            room->enemySpawnCount = 0;
+
+            if (!room->exists) continue; // outside this floor's shape - left blank, never loaded or drawn
 
             for (int ty = 0; ty < ROOM_TILE_ROWS; ty++) {
                 for (int tx = 0; tx < ROOM_TILE_COLS; tx++) {
@@ -149,19 +231,21 @@ void InitRooms() {
             int isSafeRoom = (r == ROOM_GRID_ROWS / 2 && c == ROOM_GRID_COLS / 2);
             int doorTile = isSafeRoom ? TILE_DOOR_OPEN : TILE_DOOR_CLOSED;
 
-            if (r > 0) {
+            // A side only gets a door if that neighboring room is actually
+            // part of this floor's shape - otherwise it stays a solid wall.
+            if (r > 0 && roomGrid[r - 1][c].exists) {
                 room->tiles[0][ROOM_TILE_COLS / 2 - 1] = doorTile;
                 room->tiles[0][ROOM_TILE_COLS / 2] = doorTile;                                          // north
             }
-            if (r < ROOM_GRID_ROWS - 1) {
+            if (r < ROOM_GRID_ROWS - 1 && roomGrid[r + 1][c].exists) {
                 room->tiles[ROOM_TILE_ROWS - 1][ROOM_TILE_COLS / 2 - 1] = doorTile;
                 room->tiles[ROOM_TILE_ROWS - 1][ROOM_TILE_COLS / 2] = doorTile;                          // south
             }
-            if (c > 0) {
+            if (c > 0 && roomGrid[r][c - 1].exists) {
                 room->tiles[ROOM_TILE_ROWS / 2 - 1][0] = doorTile;
                 room->tiles[ROOM_TILE_ROWS / 2][0] = doorTile;                                           // west
             }
-            if (c < ROOM_GRID_COLS - 1) {
+            if (c < ROOM_GRID_COLS - 1 && roomGrid[r][c + 1].exists) {
                 room->tiles[ROOM_TILE_ROWS / 2 - 1][ROOM_TILE_COLS - 1] = doorTile;
                 room->tiles[ROOM_TILE_ROWS / 2][ROOM_TILE_COLS - 1] = doorTile;                          // east
             }
@@ -174,7 +258,7 @@ void InitRooms() {
                 continue;
             }
 
-            int isBossRoom = (r == BOSS_ROOM_ROW && c == BOSS_ROOM_COL);
+            int isBossRoom = (r == bossRoomRow && c == bossRoomCol);
 
             if (isBossRoom) {
                 // One real boss, plus 0-2 regular adds for room presence -
@@ -183,7 +267,7 @@ void InitRooms() {
                 room->enemySpawns[0].pos = (Vector2){ WIDTH / 2.0f, HEIGHT / 2.0f };
                 room->enemySpawns[0].elite = 1;
                 room->enemySpawns[0].isBoss = 1;
-                room->enemySpawns[0].variant = ENEMY_NORMAL; // irrelevant - LoadRoom always uses assets->boss/bossAlt for isBoss
+                room->enemySpawns[0].variant = ENEMY_NORMAL;
                 room->enemySpawns[0].bossAlt = rand() % 2;
                 for (int i = 1; i < room->enemySpawnCount; i++) {
                     room->enemySpawns[i].pos.x = (float)(60 + rand() % (WIDTH - 120));
@@ -222,7 +306,7 @@ float TileRotationForSide(int tx, int ty) {
     return 0.0f;
 }
 
-void DrawTile(Texture2D tex, int tx, int ty, float tileW, float tileH) {
+void DrawTile(Texture2D tex, int tx, int ty, float tileW, float tileH, Color tint) {
     float sourceWidth = (float)tex.width;
 
     // North Wall
@@ -245,31 +329,54 @@ void DrawTile(Texture2D tex, int tx, int ty, float tileW, float tileH) {
     Rectangle sourceRec = { 0.0f, 0.0f, sourceWidth, (float)tex.height };
     Rectangle destRec = { (tx + 0.5f) * tileW, (ty + 0.5f) * tileH, tileW, tileH };
     Vector2 origin = { tileW / 2.0f, tileH / 2.0f };
-    DrawTexturePro(tex, sourceRec, destRec, origin, TileRotationForSide(tx, ty), WHITE);
+    DrawTexturePro(tex, sourceRec, destRec, origin, TileRotationForSide(tx, ty), tint);
 }
 
-void DrawRoom(Room *room, GameAssets *assets) {
+enum BossDoorSide { BOSS_SIDE_NONE, BOSS_SIDE_NORTH, BOSS_SIDE_SOUTH, BOSS_SIDE_WEST, BOSS_SIDE_EAST };
+
+int GetBossDoorSide(int roomRow, int roomCol) {
+    if (roomRow - 1 == bossRoomRow && roomCol == bossRoomCol) return BOSS_SIDE_NORTH;
+    if (roomRow + 1 == bossRoomRow && roomCol == bossRoomCol) return BOSS_SIDE_SOUTH;
+    if (roomRow == bossRoomRow && roomCol - 1 == bossRoomCol) return BOSS_SIDE_WEST;
+    if (roomRow == bossRoomRow && roomCol + 1 == bossRoomCol) return BOSS_SIDE_EAST;
+    return BOSS_SIDE_NONE;
+}
+
+int IsBossDoorTile(int tx, int ty, int bossSide) {
+    switch (bossSide) {
+        case BOSS_SIDE_NORTH: return ty == 0 && (tx == ROOM_TILE_COLS / 2 - 1 || tx == ROOM_TILE_COLS / 2);
+        case BOSS_SIDE_SOUTH: return ty == ROOM_TILE_ROWS - 1 && (tx == ROOM_TILE_COLS / 2 - 1 || tx == ROOM_TILE_COLS / 2);
+        case BOSS_SIDE_WEST:  return tx == 0 && (ty == ROOM_TILE_ROWS / 2 - 1 || ty == ROOM_TILE_ROWS / 2);
+        case BOSS_SIDE_EAST:  return tx == ROOM_TILE_COLS - 1 && (ty == ROOM_TILE_ROWS / 2 - 1 || ty == ROOM_TILE_ROWS / 2);
+        default: return 0;
+    }
+}
+
+#define BOSS_MARK_COLOR (Color){ 232, 55, 90, 255 } // hot pink/red - marks the boss room's door and its minimap tile
+
+void DrawRoom(Room *room, GameAssets *assets, int roomRow, int roomCol) {
     float tileW = (float)WIDTH / ROOM_TILE_COLS;
     float tileH = (float)HEIGHT / ROOM_TILE_ROWS;
 
+    int bossSide = GetBossDoorSide(roomRow, roomCol);
+
     for (int ty = 0; ty < ROOM_TILE_ROWS; ty++) {
         for (int tx = 0; tx < ROOM_TILE_COLS; tx++) {
+            int isDoor = (room->tiles[ty][tx] == TILE_DOOR_OPEN || room->tiles[ty][tx] == TILE_DOOR_CLOSED);
+            Color tint = (isDoor && IsBossDoorTile(tx, ty, bossSide)) ? BOSS_MARK_COLOR : WHITE;
+
             switch (room->tiles[ty][tx]) {
-                case TILE_WALL_1:      DrawTile(assets->walls[0], tx, ty, tileW, tileH); break;
-                case TILE_WALL_2:      DrawTile(assets->walls[1], tx, ty, tileW, tileH); break;
-                case TILE_WALL_3:      DrawTile(assets->walls[2], tx, ty, tileW, tileH); break;
-                case TILE_DOOR_OPEN:   DrawTile(assets->doorOpen, tx, ty, tileW, tileH); break;
-                case TILE_DOOR_CLOSED: DrawTile(assets->doorClosed, tx, ty, tileW, tileH); break;
+                case TILE_WALL_1:      DrawTile(assets->walls[0], tx, ty, tileW, tileH, WHITE); break;
+                case TILE_WALL_2:      DrawTile(assets->walls[1], tx, ty, tileW, tileH, WHITE); break;
+                case TILE_WALL_3:      DrawTile(assets->walls[2], tx, ty, tileW, tileH, WHITE); break;
+                case TILE_DOOR_OPEN:   DrawTile(assets->doorOpen, tx, ty, tileW, tileH, tint); break;
+                case TILE_DOOR_CLOSED: DrawTile(assets->doorClosed, tx, ty, tileW, tileH, tint); break;
                 default: break; // TILE_FLOOR - nothing drawn, background shows through
             }
         }
     }
 }
 
-// The player's upgradeable numbers, bundled into one struct so pickups,
-// level-ups, and the debug panel all have a single thing to read/modify.
-// Enemies/pickups carry a zero-valued, unused Stats - same as dashTimer
-// already being irrelevant for them.
 typedef struct {
     float moveSpeed;    // replaces MAX_MOVE_SPEED for whoever holds this
     int damage;         // bonus added on top of DASH_DAMAGE
@@ -298,18 +405,24 @@ typedef struct {
     int maxhp;
     int iframes; // frames of invincibility left; while >0, this sprite can't take another hit
 
-    int elite;        // ENEMY only: tougher, tinted gold, guaranteed pickup drop
-    int variant;       // ENEMY only: EnemyVariant - speed/hp/damage profile
-    int isBoss;        // ENEMY only: the boss room's single dedicated spawn, not just another elite
-    float sizeMult;    // draw scale + collision radius multiplier, 1.0 for everything except the boss
-    int upgradeType;   // PICKUP only: which UpgradeType this grants on collection
+    int elite;
+    int variant;
+    int isBoss;
+    int staggerTimer;
+    int aiState;
+    int aiTimer;
+    float chargeDirX;
+    float chargeDirY;
+    float weavePhase;
+    float sizeMult;
+    int upgradeType;
 
     int roomRow;
     int roomCol;
 
-    Stats stats; // PLAYER only: current upgraded values
-    int exp;     // PLAYER only
-    int level;   // PLAYER only
+    Stats stats;
+    int exp;
+    int level;
 } Sprite;
 
 // Flat, pre-allocated pool of every sprite in play (player, enemies,
@@ -358,6 +471,100 @@ float EnemyDamageMult(int variant) {
     }
 }
 
+// Chaser (normal): constant homing, unchanged from the original single AI path.
+void UpdateChaserAI(Sprite *s) {
+    float dx = sprites[0].x - s->x;
+    float dy = sprites[0].y - s->y;
+    float len = sqrtf(dx * dx + dy * dy);
+    if (len > 0.01f) {
+        s->ax = dx / len * ENEMY_CHASE_ACCEL * EnemySpeedMult(s->variant);
+        s->ay = dy / len * ENEMY_CHASE_ACCEL * EnemySpeedMult(s->variant);
+    }
+}
+
+// Weaver (fast/ULTRA): homes in like a chaser, but the approach vector gets a
+// sine-driven sideways pull, so it snakes rather than beelines - reads as an
+// erratic, hard-to-predict skirmisher instead of just "chaser but faster".
+void UpdateWeaverAI(Sprite *s) {
+    float dx = sprites[0].x - s->x;
+    float dy = sprites[0].y - s->y;
+    float len = sqrtf(dx * dx + dy * dy);
+    if (len <= 0.01f) return;
+
+    float dirX = dx / len, dirY = dy / len;
+    float perpX = -dirY, perpY = dirX; // rotate 90 degrees for the sideways component
+
+    s->weavePhase += WEAVE_FREQUENCY;
+    float weave = sinf(s->weavePhase) * WEAVE_AMPLITUDE;
+
+    float speedMult = EnemySpeedMult(s->variant);
+    s->ax = (dirX + perpX * weave) * ENEMY_CHASE_ACCEL * speedMult;
+    s->ay = (dirY + perpY * weave) * ENEMY_CHASE_ACCEL * speedMult;
+}
+
+// Charger (tank, and boss reusing the same pattern): drift into range, stop
+// and visibly wind up (see DrawSprite for the tell), commit to a straight
+// dash at wherever the player was when the windup ended, then recover slow
+// and open. Direction is locked in at windup's end, not re-aimed mid-charge -
+// the player can juke a committed charge, which is the whole point.
+void UpdateChargerAI(Sprite *s, float range, int windupDuration, float chargeSpeed, int chargeDuration, int recoverDuration) {
+    float dx = sprites[0].x - s->x;
+    float dy = sprites[0].y - s->y;
+    float dist = sqrtf(dx * dx + dy * dy);
+
+    switch (s->aiState) {
+        default:
+        case AI_CHASE:
+            if (dist > 0.01f) {
+                s->ax = dx / dist * ENEMY_CHASE_ACCEL * EnemySpeedMult(s->variant);
+                s->ay = dy / dist * ENEMY_CHASE_ACCEL * EnemySpeedMult(s->variant);
+            }
+            if (dist < range) {
+                s->aiState = AI_WINDUP;
+                s->aiTimer = windupDuration;
+            }
+            break;
+
+        case AI_WINDUP:
+            s->ax = 0.0f;
+            s->ay = 0.0f;
+            s->vx *= 0.8f;
+            s->vy *= 0.8f;
+            s->aiTimer--;
+            if (s->aiTimer <= 0) {
+                float len = dist > 0.01f ? dist : 1.0f;
+                s->chargeDirX = dx / len;
+                s->chargeDirY = dy / len;
+                s->aiState = AI_CHARGE;
+                s->aiTimer = chargeDuration;
+            }
+            break;
+
+        case AI_CHARGE:
+            s->ax = 0.0f;
+            s->ay = 0.0f;
+            s->vx = s->chargeDirX * chargeSpeed;
+            s->vy = s->chargeDirY * chargeSpeed;
+            s->aiTimer--;
+            if (s->aiTimer <= 0) {
+                s->aiState = AI_RECOVER;
+                s->aiTimer = recoverDuration;
+            }
+            break;
+
+        case AI_RECOVER:
+            s->ax = 0.0f;
+            s->ay = 0.0f;
+            s->vx *= 0.9f;
+            s->vy *= 0.9f;
+            s->aiTimer--;
+            if (s->aiTimer <= 0) {
+                s->aiState = AI_CHASE;
+            }
+            break;
+    }
+}
+
 // Fixed pool of floating labels - pickups, level-ups, and room-cleared all
 // reuse this one mechanism instead of three separate ad-hoc UI bits.
 typedef struct {
@@ -402,11 +609,13 @@ void ApplyUpgrade(Sprite *player, int upgradeType) {
     switch (upgradeType) {
         case UPGRADE_MOVE_SPEED:   stats->moveSpeed += UPGRADE_MOVE_SPEED_AMOUNT; break;
         case UPGRADE_DAMAGE:       stats->damage += UPGRADE_DAMAGE_AMOUNT; break;
-        case UPGRADE_DASH_TIME:    stats->dashTime += UPGRADE_DASH_TIME_AMOUNT; break;
+        case UPGRADE_DASH_TIME:
+            stats->dashTime += UPGRADE_DASH_TIME_AMOUNT;
+            if (stats->dashTime > DASH_TIME_MAX) stats->dashTime = DASH_TIME_MAX;
+            break;
         case UPGRADE_IFRAMES:      stats->iframesMax += UPGRADE_IFRAMES_AMOUNT; break;
         case UPGRADE_DODGE_CHANCE:
             stats->dodgeChance += UPGRADE_DODGE_CHANCE_AMOUNT;
-            // Cap dodge chance at 75% so the player never becomes immortal
             if (stats->dodgeChance > 0.75f) stats->dodgeChance = 0.75f;
             break;
         case UPGRADE_DASH_RADIUS:  stats->dashRadius += UPGRADE_DASH_RADIUS_AMOUNT; break;
@@ -427,9 +636,82 @@ void GrantExp(Sprite *player, int amount) {
     while (player->exp >= ExpNeededForLevel(player->level)) {
         player->exp -= ExpNeededForLevel(player->level);
         player->level++;
-        int upgrade = rand() % UPGRADE_TYPE_COUNT;
-        ApplyUpgrade(player, upgrade);
-        SpawnPopupText(TextFormat("Level Up! %s", UpgradeName(upgrade)), player->x, player->y - 30.0f);
+        pendingLevelUps++; // resolved into a choice screen by the main loop, one at a time
+        SpawnPopupText("Level Up!", player->x, player->y - 30.0f);
+    }
+}
+
+// Fills out[0..count-1] with distinct UpgradeTypes drawn from the full pool -
+// swap-remove over a small local pool, same idiom as CleanUpSprites' swap-and-pop.
+void RollUpgradeChoices(int *out, int count) {
+    int pool[UPGRADE_TYPE_COUNT];
+    for (int i = 0; i < UPGRADE_TYPE_COUNT; i++) pool[i] = i;
+    int poolSize = UPGRADE_TYPE_COUNT;
+
+    for (int i = 0; i < count && poolSize > 0; i++) {
+        int idx = rand() % poolSize;
+        out[i] = pool[idx];
+        pool[idx] = pool[--poolSize];
+    }
+}
+
+// Pops one queued level-up into an active choice screen. Gameplay stays paused
+// (see the main loop) until HandleUpgradeChoiceInput() resolves it.
+void StartUpgradeChoice(void) {
+    RollUpgradeChoices(upgradeChoices, 3);
+    awaitingUpgradeChoice = 1;
+    pendingLevelUps--;
+}
+
+// Number-key input while a choice screen is up: 1/2/3 picks that option,
+// applies it, and either resumes play or immediately queues the next one
+// if the player leveled up more than once on the same kill.
+void HandleUpgradeChoiceInput(Sprite *player) {
+    int picked = -1;
+    if (IsKeyPressed(KEY_ONE))   picked = 0;
+    if (IsKeyPressed(KEY_TWO))   picked = 1;
+    if (IsKeyPressed(KEY_THREE)) picked = 2;
+    if (picked < 0) return;
+
+    int upgrade = upgradeChoices[picked];
+    ApplyUpgrade(player, upgrade);
+    SpawnPopupText(UpgradeName(upgrade), player->x, player->y - 30.0f);
+    awaitingUpgradeChoice = 0;
+}
+
+// Paused overlay showing the 3 rolled options as icon cards, press 1/2/3 to pick.
+void DrawUpgradeChoiceScreen(Sprite *player, GameAssets *assets) {
+    DrawRectangle(0, 0, WIDTH, HEIGHT, Fade(BLACK, 0.6f));
+
+    const char *title = "LEVEL UP - Choose an upgrade";
+    Vector2 titleSize = MeasureTextEx(customFont, title, 28.0f, 1.0f);
+    DrawTextEx(customFont, title, (Vector2){ WIDTH / 2.0f - titleSize.x / 2.0f, HEIGHT / 2.0f - 130.0f }, 28.0f, 1.0f, WHITE);
+
+    float cardW = 160.0f, cardH = 180.0f, gap = 20.0f;
+    float totalW = cardW * 3 + gap * 2;
+    float startX = WIDTH / 2.0f - totalW / 2.0f;
+    float cardY = HEIGHT / 2.0f - cardH / 2.0f;
+
+    for (int i = 0; i < 3; i++) {
+        float cardX = startX + i * (cardW + gap);
+        DrawRectangle((int)cardX, (int)cardY, (int)cardW, (int)cardH, Fade(WHITE, 0.9f));
+        DrawRectangleLines((int)cardX, (int)cardY, (int)cardW, (int)cardH, BLACK);
+
+        Texture2D icon = assets->upgradeIcons[upgradeChoices[i]];
+        float iconSize = 64.0f;
+        float scale = iconSize / (float)icon.width;
+        Rectangle srcRec = { 0, 0, (float)icon.width, (float)icon.height };
+        Rectangle destRec = { cardX + cardW / 2.0f, cardY + 50.0f, icon.width * scale, icon.height * scale };
+        Vector2 origin = { destRec.width / 2.0f, destRec.height / 2.0f };
+        DrawTexturePro(icon, srcRec, destRec, origin, 0.0f, WHITE);
+
+        const char *name = UpgradeName(upgradeChoices[i]);
+        Vector2 nameSize = MeasureTextEx(customFont, name, 16.0f, 1.0f);
+        DrawTextEx(customFont, name, (Vector2){ cardX + cardW / 2.0f - nameSize.x / 2.0f, cardY + 100.0f }, 16.0f, 1.0f, BLACK);
+
+        const char *key = TextFormat("[%d]", i + 1);
+        Vector2 keySize = MeasureTextEx(customFont, key, 20.0f, 1.0f);
+        DrawTextEx(customFont, key, (Vector2){ cardX + cardW / 2.0f - keySize.x / 2.0f, cardY + cardH - 30.0f }, 20.0f, 1.0f, DARKGRAY);
     }
 }
 
@@ -441,10 +723,28 @@ float GetSpriteScale(Texture2D tex) {
 void DrawSprite(Sprite s) {
     Texture2D tex = s.texture;
 
-    float rotation = atan2f(s.vy , s.vx) * RAD2DEG;
+    // Chargers face their locked-in target during the windup/charge instead of
+    // whatever their (near-zero, decaying) velocity says - that's the "aiming" tell.
+    float rotation;
+    if (s.type == ENEMY && s.aiState == AI_WINDUP) {
+        float dx = sprites[0].x - s.x;
+        float dy = sprites[0].y - s.y;
+        rotation = atan2f(dy, dx) * RAD2DEG;
+    } else if (s.type == ENEMY && s.aiState == AI_CHARGE) {
+        rotation = atan2f(s.chargeDirY, s.chargeDirX) * RAD2DEG;
+    } else {
+        rotation = atan2f(s.vy, s.vx) * RAD2DEG;
+    }
     Vector2 position = { s.x, s.y };
 
-    float scale = GetSpriteScale(tex) * s.sizeMult;
+    // Windup gets a slow pulse in scale on top of the normal size, so a charger
+    // visibly "loads up" even for players who miss the color flicker.
+    float chargeScale = 1.0f;
+    if (s.type == ENEMY && s.aiState == AI_WINDUP) {
+        chargeScale = 1.0f + 0.12f * (0.5f + 0.5f * sinf((float)GetTime() * 18.0f));
+    }
+
+    float scale = GetSpriteScale(tex) * s.sizeMult * chargeScale;
     float destW = (float)tex.width * scale;
     float destH = (float)tex.height * scale;
 
@@ -455,6 +755,8 @@ void DrawSprite(Sprite s) {
 
     Color tint = WHITE;
     if (s.type == ENEMY && s.elite) tint = GOLD;
+    // Fast red flicker during windup - the clearest possible "something's about to happen" signal
+    if (s.type == ENEMY && s.aiState == AI_WINDUP && ((s.aiTimer / 4) % 2 == 0)) tint = RED;
     if (s.iframes > 0) tint = Fade(tint, 0.4f); // flicker while invincible, on top of any base tint
 
     DrawTexturePro(tex, sourceRec, destRec, origin, rotation, tint);
@@ -526,6 +828,75 @@ void DrawDebugPanel(Sprite *player) {
     DrawTextEx(customFont, TextFormat("Room: (%d, %d)", currentRoomRow, currentRoomCol), (Vector2){ 10, y }, 16.0f, 1.0f, WHITE); y += lineHeight;
     DrawTextEx(customFont, TextFormat("Depth: %d", dungeonDepth), (Vector2){ 10, y }, 16.0f, 1.0f, WHITE); y += lineHeight;
     DrawFPS(10, HEIGHT - 20);
+}
+
+// Has the player found a tinted door pointing at the boss room yet (either
+// by standing in the boss room itself, or in a neighbor that borders it)?
+// Drives whether the minimap is allowed to mark the boss room at all -
+// keeps the map from spoiling a floor the player hasn't explored.
+int BossRoomRevealed(void) {
+    if (roomGrid[bossRoomRow][bossRoomCol].visited) return 1;
+
+    static const int dr[4] = { -1, 1, 0, 0 };
+    static const int dc[4] = { 0, 0, -1, 1 };
+    for (int i = 0; i < 4; i++) {
+        int nr = bossRoomRow + dr[i];
+        int nc = bossRoomCol + dc[i];
+        if (nr < 0 || nr >= ROOM_GRID_ROWS || nc < 0 || nc >= ROOM_GRID_COLS) continue;
+        if (roomGrid[nr][nc].exists && roomGrid[nr][nc].visited) return 1;
+    }
+    return 0;
+}
+
+// Semi-transparent floor overview, bottom-right corner. Shows only rooms the
+// player has actually visited (fog of war) plus the current room highlighted;
+// the boss room gets its own marker as soon as it's been revealed by a
+// tinted door (see BossRoomRevealed), even before it's been entered.
+void DrawMinimap(void) {
+    float cell = MINIMAP_CELL_SIZE;
+    float gap = MINIMAP_CELL_GAP;
+    float gridW = ROOM_GRID_COLS * cell + (ROOM_GRID_COLS - 1) * gap;
+    float gridH = ROOM_GRID_ROWS * cell + (ROOM_GRID_ROWS - 1) * gap;
+
+    float panelW = gridW + MINIMAP_PADDING * 2;
+    float panelH = gridH + MINIMAP_PADDING * 2;
+    float panelX = (float)WIDTH - panelW - MINIMAP_MARGIN;
+    float panelY = (float)HEIGHT - panelH - MINIMAP_MARGIN;
+
+    DrawRectangle((int)panelX, (int)panelY, (int)panelW, (int)panelH, Fade(BLACK, MINIMAP_BG_ALPHA));
+    DrawRectangleLines((int)panelX, (int)panelY, (int)panelW, (int)panelH, Fade(WHITE, 0.5f));
+
+    int bossRevealed = BossRoomRevealed();
+
+    for (int r = 0; r < ROOM_GRID_ROWS; r++) {
+        for (int c = 0; c < ROOM_GRID_COLS; c++) {
+            Room *room = &roomGrid[r][c];
+            int isBoss = (r == bossRoomRow && c == bossRoomCol);
+            int isCurrent = (r == currentRoomRow && c == currentRoomCol);
+
+            float x = panelX + MINIMAP_PADDING + c * (cell + gap);
+            float y = panelY + MINIMAP_PADDING + r * (cell + gap);
+
+            if (!room->exists || !room->visited) {
+                // Undiscovered - stays hidden, except the boss room gets a
+                // dim outline once its door has been spotted from nearby.
+                if (isBoss && bossRevealed) {
+                    DrawRectangleLines((int)x, (int)y, (int)cell, (int)cell, Fade(BOSS_MARK_COLOR, 0.85f));
+                }
+                continue;
+            }
+
+            Color fill = room->cleared ? Fade(LIGHTGRAY, 0.9f) : Fade(GRAY, 0.9f);
+            if (isBoss) fill = Fade(BOSS_MARK_COLOR, 0.9f);
+
+            DrawRectangle((int)x, (int)y, (int)cell, (int)cell, fill);
+            if (isCurrent) {
+                DrawRectangleLines((int)x - 1, (int)y - 1, (int)cell + 2, (int)cell + 2, YELLOW);
+            } else {
+                DrawRectangleLines((int)x, (int)y, (int)cell, (int)cell, Fade(BLACK, 0.6f));
+            }
+        }
+    }
 }
 
 void move(Sprite *s) {
@@ -601,14 +972,22 @@ void Update(GameAssets *assets) {
         if (!s->active) continue;
         if (s->type != PLAYER && (s->roomRow != currentRoomRow || s->roomCol != currentRoomCol)) continue;
 
-        // Swarm AI: constantly steer toward the player
+        // Enemy AI: dispatch by variant/boss, unless staggered from a recent dash hit
         if (s->type == ENEMY) {
-            float dx = sprites[0].x - s->x;
-            float dy = sprites[0].y - s->y;
-            float len = sqrtf(dx*dx + dy*dy);
-            if (len > 0.01f) {
-                s->ax = dx / len * ENEMY_CHASE_ACCEL * EnemySpeedMult(s->variant);
-                s->ay = dy / len * ENEMY_CHASE_ACCEL * EnemySpeedMult(s->variant);
+            if (s->staggerTimer > 0) {
+                s->staggerTimer--;
+                s->ax = 0;
+                s->ay = 0;
+                s->vx *= ENEMY_STAGGER_FRICTION;
+                s->vy *= ENEMY_STAGGER_FRICTION;
+            } else if (s->isBoss) {
+                UpdateChargerAI(s, BOSS_CHARGE_RANGE, BOSS_WINDUP_DURATION, BOSS_CHARGE_SPEED, BOSS_CHARGE_DURATION, BOSS_RECOVER_DURATION);
+            } else {
+                switch (s->variant) {
+                    case ENEMY_FAST: UpdateWeaverAI(s); break;
+                    case ENEMY_TANK: UpdateChargerAI(s, TANK_CHARGE_RANGE, TANK_WINDUP_DURATION, TANK_CHARGE_SPEED, TANK_CHARGE_DURATION, TANK_RECOVER_DURATION); break;
+                    default:         UpdateChaserAI(s); break;
+                }
             }
         }
 
@@ -616,7 +995,9 @@ void Update(GameAssets *assets) {
         s->vx = (s->vx + s->ax) * 0.99f;
         s->vy = (s->vy + s->ay) * 0.99f;
 
-        if (s->type == ENEMY) {
+        // Chargers set vx/vy directly for the charge itself, so let that ride
+        // uncapped - the max-speed clamp below is for chase-state steering only.
+        if (s->type == ENEMY && s->staggerTimer <= 0 && s->aiState != AI_CHARGE) {
             float speed = sqrtf(s->vx * s->vx + s->vy * s->vy);
             float maxSpeed = ENEMY_MAX_SPEED * EnemySpeedMult(s->variant);
             if (speed > maxSpeed) {
@@ -652,8 +1033,15 @@ void Update(GameAssets *assets) {
                     float dy = enemy->y - player->y;
                     float len = sqrtf(dx*dx + dy*dy);
                     if (len > 0.01f) {
-                        enemy->vx = (dx / len) * 12.0f; 
-                        enemy->vy = (dy / len) * 12.0f;
+                        enemy->vx = (dx / len) * DASH_KNOCKBACK_SPEED;
+                        enemy->vy = (dy / len) * DASH_KNOCKBACK_SPEED;
+                    }
+                    enemy->staggerTimer = ENEMY_STAGGER_DURATION;
+                    if (enemy->aiState == AI_WINDUP || enemy->aiState == AI_CHARGE) {
+                        // Catching a charger mid-telegraph or mid-charge cancels the attack outright
+                        // and drops it straight into its punish window, instead of it just resuming.
+                        enemy->aiState = AI_RECOVER;
+                        enemy->aiTimer = enemy->isBoss ? BOSS_RECOVER_DURATION : TANK_RECOVER_DURATION;
                     }
                     if (enemy->hp <= 0) {
                         enemy->active = 0;
@@ -791,7 +1179,7 @@ void UpdateDoors(Room *room) {
 int AllRoomsCleared(void) {
     for (int r = 0; r < ROOM_GRID_ROWS; r++) {
         for (int c = 0; c < ROOM_GRID_COLS; c++) {
-            if (!roomGrid[r][c].cleared) return 0;
+            if (roomGrid[r][c].exists && !roomGrid[r][c].cleared) return 0;
         }
     }
     return 1;
@@ -822,7 +1210,7 @@ void LoadRoom(GameAssets *assets) {
 
     if (room->cleared) return;
 
-    int isBossRoom = (currentRoomRow == BOSS_ROOM_ROW && currentRoomCol == BOSS_ROOM_COL);
+    int isBossRoom = (currentRoomRow == bossRoomRow && currentRoomCol == bossRoomCol);
     if (isBossRoom) {
         SpawnPopupText("Boss Room!", sprites[0].x - 30.0f, sprites[0].y - 40.0f);
     }
@@ -852,22 +1240,22 @@ int TryChangeRoom(Sprite *player) {
     float insetX = tileW * 1.5f;
     float insetY = tileH * 1.5f;
 
-    if (player->x < 0 && currentRoomCol > 0) {
+    if (player->x < 0 && currentRoomCol > 0 && roomGrid[currentRoomRow][currentRoomCol - 1].exists) {
         currentRoomCol--;
         player->x = WIDTH - insetX;
         return 1;
     }
-    if (player->x > WIDTH && currentRoomCol < ROOM_GRID_COLS - 1) {
+    if (player->x > WIDTH && currentRoomCol < ROOM_GRID_COLS - 1 && roomGrid[currentRoomRow][currentRoomCol + 1].exists) {
         currentRoomCol++;
         player->x = insetX;
         return 1;
     }
-    if (player->y < 0 && currentRoomRow > 0) {
+    if (player->y < 0 && currentRoomRow > 0 && roomGrid[currentRoomRow - 1][currentRoomCol].exists) {
         currentRoomRow--;
         player->y = HEIGHT - insetY;
         return 1;
     }
-    if (player->y > HEIGHT && currentRoomRow < ROOM_GRID_ROWS - 1) {
+    if (player->y > HEIGHT && currentRoomRow < ROOM_GRID_ROWS - 1 && roomGrid[currentRoomRow + 1][currentRoomCol].exists) {
         currentRoomRow++;
         player->y = insetY;
         return 1;
@@ -881,6 +1269,8 @@ void ResetGame(GameAssets *assets) {
     currentRoomRow = ROOM_GRID_ROWS / 2;
     currentRoomCol = ROOM_GRID_COLS / 2;
     dungeonDepth = 0; // fresh run - back to floor 1 difficulty
+    pendingLevelUps = 0;
+    awaitingUpgradeChoice = 0;
 
     Sprite *player = &sprites[spriteCount++];
     *player = (Sprite){assets->player, WIDTH / 2.0f, HEIGHT / 2.0f, 0, 0, 0, 0, 1, PLAYER};
@@ -912,7 +1302,9 @@ int main() {
 
     while(!WindowShouldClose()) {
         if (player->hp > 0) {
-            if (hitStopTimer > 0) {
+            if (awaitingUpgradeChoice) {
+                HandleUpgradeChoiceInput(player);
+            } else if (hitStopTimer > 0) {
                 hitStopTimer--;
             } else {
             Update(&assets);
@@ -943,6 +1335,8 @@ int main() {
                 LoadRoom(&assets);
             }
             move(player);
+
+            if (pendingLevelUps > 0) StartUpgradeChoice();
             }
             UpdatePopupTexts();
             if (hitFlashTimer > 0) hitFlashTimer--;
@@ -971,7 +1365,7 @@ int main() {
         // Begin rendering the game world through the shaking camera
         BeginMode2D(camera);
         DrawTexture(assets.background, 0, 0, WHITE); // native res on purpose - no scaling to WIDTH/HEIGHT
-        DrawRoom(&roomGrid[currentRoomRow][currentRoomCol], &assets);
+        DrawRoom(&roomGrid[currentRoomRow][currentRoomCol], &assets, currentRoomRow, currentRoomCol);
         //drawing the sprites
         for (int i = 0; i < spriteCount; i++) {
             Sprite *s = &sprites[i];
@@ -1011,8 +1405,10 @@ int main() {
         EndMode2D();
         DrawExpBar(player);
         DrawHpBar(player);
+        DrawMinimap();
         DrawPopupTexts();
         if (hitFlashTimer > 0) DrawRectangle(0, 0, WIDTH, HEIGHT, Fade(WHITE, 0.5f * hitFlashTimer / HIT_FLASH_DURATION));
+        if (awaitingUpgradeChoice) DrawUpgradeChoiceScreen(player, &assets);
         if (player->hp <= 0) {
             DrawRectangle(0, 0, WIDTH, HEIGHT, Fade(BLACK, 0.6f));
             const char *msg = "GAME OVER";
