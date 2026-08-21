@@ -126,6 +126,12 @@
 #define UPGRADE_DODGE_CHANCE_AMOUNT 0.05f
 #define UPGRADE_DASH_RADIUS_AMOUNT 8.0f
 #define UPGRADE_HEAL_AMOUNT 20 // matches new CONTACT_DAMAGE - one heal undoes one hit
+#define EXPLOSIVE_DAMAGE_PER_LEVEL 3 // was 5 - explosions chain through KillEnemy recursively, so full strength here let one dash kill fold an entire clustered pack
+#define BLEED_DAMAGE_PER_TICK 1      // was 2 - halved since ENEMY_MAX_HP is only 3 at baseline, so 2/tick was a near-guaranteed kill on its own
+#define EXPLOSIVE_RADIUS 8           // was 10 - slightly tighter so it needs enemies genuinely packed together, not just roughly nearby
+#define BLEED_DURATION_PER_LEVEL 4   // was 5 - fewer ticks per level, so bleed stacks up more gradually across upgrades
+#define BLEED_TICK_FRAMES 9          // was 7 - ticks a bit slower
+#define CHAIN_RADIUS 10
 
 // Floating "+Stat" popups (pickups, level-ups, room cleared)
 #define MAX_POPUP_TEXTS 8
