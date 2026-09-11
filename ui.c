@@ -51,6 +51,7 @@ void DrawSprite(Sprite s) {
     } else {
         rotation = atan2f(s.vy, s.vx) * RAD2DEG;
     }
+    if (s.type == ENEMY && s.isBoss) rotation -= 90.0f; // Boss1/Boss2 frames face "up" by default, not "right"
     Vector2 position = { s.x, s.y };
 
     // Windup gets a slow pulse in scale on top of the normal size, so a charger visibly "loads up".
@@ -128,13 +129,15 @@ void DrawDebugPanel(Sprite *player) {
     DrawTextEx(customFont, TextFormat("HP: %d / %d", player->hp, player->maxhp), (Vector2){ 10, y }, 16.0f, 1.0f, WHITE); y += lineHeight;
     DrawTextEx(customFont, TextFormat("Level %d  (%d/%d exp)", player->level, player->exp, ExpNeededForLevel(player->level)), (Vector2){ 10, y }, 16.0f, 1.0f, WHITE); y += lineHeight;
     y += lineHeight / 2;
-    DrawTextEx(customFont, TextFormat("Move Speed: %.2f", player->stats.moveSpeed), (Vector2){ 10, y }, 16.0f, 1.0f, WHITE); y += lineHeight;
-    DrawTextEx(customFont, TextFormat("Dash Damage: %d + %d", DASH_DAMAGE, player->stats.damage), (Vector2){ 10, y }, 16.0f, 1.0f, WHITE); y += lineHeight;
-    DrawTextEx(customFont, TextFormat("Dash Time: %d frames", player->stats.dashTime), (Vector2){ 10, y }, 16.0f, 1.0f, WHITE); y += lineHeight;
-    DrawTextEx(customFont, TextFormat("Iframes: %d frames", player->stats.iframesMax), (Vector2){ 10, y }, 16.0f, 1.0f, WHITE); y += lineHeight;
-    DrawTextEx(customFont, TextFormat("Dodge Chance: %.0f%%", player->stats.dodgeChance * 100.0f), (Vector2){ 10, y }, 16.0f, 1.0f, WHITE); y += lineHeight;
-    DrawTextEx(customFont, TextFormat("Dash Radius Bonus: %.1f", player->stats.dashRadius), (Vector2){ 10, y }, 16.0f, 1.0f, WHITE); y += lineHeight;
-    DrawTextEx(customFont, TextFormat("Explosive Lv: %d  Chain Lv: %d  Bleed Lv: %d", player->stats.explosiveLevel, player->stats.chainLevel, player->stats.bleedLevel), (Vector2){ 10, y }, 16.0f, 1.0f, WHITE); y += lineHeight;
+    DrawTextEx(customFont, TextFormat("Move Speed: %.2f", player->stats.moveSpeed), (Vector2){ 10, y }, 16.0f, 1.0f, YELLOW); y += lineHeight;
+    DrawTextEx(customFont, TextFormat("Dash Damage: %d + %d", DASH_DAMAGE, player->stats.damage), (Vector2){ 10, y }, 16.0f, 1.0f, GREEN); y += lineHeight;
+    DrawTextEx(customFont, TextFormat("Dash Time: %d frames", player->stats.dashTime), (Vector2){ 10, y }, 16.0f, 1.0f, SKYBLUE); y += lineHeight;
+    DrawTextEx(customFont, TextFormat("Iframes: %d frames", player->stats.iframesMax), (Vector2){ 10, y }, 16.0f, 1.0f, PURPLE); y += lineHeight;
+    DrawTextEx(customFont, TextFormat("Dodge Chance: %.0f%%", player->stats.dodgeChance * 100.0f), (Vector2){ 10, y }, 16.0f, 1.0f, PINK); y += lineHeight;
+    DrawTextEx(customFont, TextFormat("Dash Radius Bonus: %.1f", player->stats.dashRadius), (Vector2){ 10, y }, 16.0f, 1.0f, RED); y += lineHeight;
+    DrawTextEx(customFont, TextFormat("Explosive Lv: %d", player->stats.explosiveLevel), (Vector2){ 10, y }, 16.0f, 1.0f, ORANGE); y += lineHeight;
+    DrawTextEx(customFont, TextFormat("Chain Lv: %d", player->stats.chainLevel), (Vector2){ 10, y }, 16.0f, 1.0f, LIME); y += lineHeight;
+    DrawTextEx(customFont, TextFormat("Bleed Lv: %d", player->stats.bleedLevel), (Vector2){ 10, y }, 16.0f, 1.0f, BLUE); y += lineHeight;
     y += lineHeight / 2;
     DrawTextEx(customFont, TextFormat("Room: (%d, %d)", currentRoomRow, currentRoomCol), (Vector2){ 10, y }, 16.0f, 1.0f, WHITE); y += lineHeight;
     DrawTextEx(customFont, TextFormat("Depth: %d", dungeonDepth), (Vector2){ 10, y }, 16.0f, 1.0f, WHITE); y += lineHeight;

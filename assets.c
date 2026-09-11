@@ -9,10 +9,18 @@ GameAssets LoadGameAssets(void) {
     assets.enemyVariants[ENEMY_FAST]   = LoadTexture("assets/ULTRA.png");
     assets.enemyVariants[ENEMY_TANK]   = LoadTexture("assets/horny.png");
 
-    assets.boss    = LoadTexture("assets/boss_tamir_shooter1.png");
-    assets.bossAlt = LoadTexture("assets/boss_alternate.png");
+    for (int i = 0; i < BOSS1_FRAME_COUNT; i++) {
+        assets.boss1Frames[i] = LoadTexture(TextFormat("assets/Boss1/boss%d.png", i + 1));
+    }
+    for (int i = 0; i < BOSS2_FRAME_COUNT; i++) {
+        assets.boss2Frames[i] = LoadTexture(TextFormat("assets/Boss2/%d.png", i + 1));
+    }
+    for (int i = 0; i < SHOPKEEP_FRAME_COUNT; i++) {
+        assets.shopkeepFrames[i] = LoadTexture(TextFormat("assets/ShopMan/%d.png", i + 1));
+    }
     assets.pot        = LoadTexture("assets/pot.png");
     assets.aura        = LoadTexture("assets/aura.png");
+    assets.explosion   = LoadTexture("assets/fireball.png");
     assets.background = LoadTexture("assets/background.png");
 
     assets.walls[0]   = LoadTexture("assets/wall.png");
@@ -28,7 +36,7 @@ GameAssets LoadGameAssets(void) {
     assets.upgradeIcons[UPGRADE_DODGE_CHANCE] = LoadTexture("assets/dash_dodge.png");
     assets.upgradeIcons[UPGRADE_DASH_RADIUS]  = LoadTexture("assets/charge.png");
     assets.upgradeIcons[UPGRADE_HEAL]         = LoadTexture("assets/ugia.png");
-    assets.upgradeIcons[UPGRADE_EXPLOSIVE]    = LoadTexture("assets/leech.png");
+    assets.upgradeIcons[UPGRADE_EXPLOSIVE]    = LoadTexture("assets/dynamite.png");
     assets.upgradeIcons[UPGRADE_CHAIN]        = LoadTexture("assets/NRG_Ball.png");
     assets.upgradeIcons[UPGRADE_BLEED]        = LoadTexture("assets/bleed.png");
 
@@ -38,10 +46,12 @@ GameAssets LoadGameAssets(void) {
 void UnloadGameAssets(GameAssets *assets) {
     UnloadTexture(assets->player);
     for (int i = 0; i < ENEMY_VARIANT_COUNT; i++) UnloadTexture(assets->enemyVariants[i]);
-    UnloadTexture(assets->boss);
-    UnloadTexture(assets->bossAlt);
+    for (int i = 0; i < BOSS1_FRAME_COUNT; i++) UnloadTexture(assets->boss1Frames[i]);
+    for (int i = 0; i < BOSS2_FRAME_COUNT; i++) UnloadTexture(assets->boss2Frames[i]);
+    for (int i = 0; i < SHOPKEEP_FRAME_COUNT; i++) UnloadTexture(assets->shopkeepFrames[i]);
     UnloadTexture(assets->pot);
     UnloadTexture(assets->aura);
+    UnloadTexture(assets->explosion);
     UnloadTexture(assets->background);
     for (int i = 0; i < 3; i++) UnloadTexture(assets->walls[i]);
     UnloadTexture(assets->doorOpen);

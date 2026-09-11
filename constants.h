@@ -133,6 +133,25 @@
 #define BLEED_TICK_FRAMES 9          // was 7 - ticks a bit slower
 #define CHAIN_RADIUS 10
 
+// Boss/shopkeep sprite-sheet animation. Frame files are named boss1.png..boss8.png (Boss1),
+// 1.png..16.png (Boss2), 1.png..25.png (ShopMan) - see LoadGameAssets in assets.c for the exact paths.
+#define BOSS1_FRAME_COUNT 8
+#define BOSS2_FRAME_COUNT 16
+#define SHOPKEEP_FRAME_COUNT 25 // loaded now so it's ready when the shop room lands - nothing draws it yet
+#define ANIM_FRAME_DURATION 6   // game frames each animation frame holds for (60fps / 6 = ~10fps playback)
+
+// Upgrade rarity weights - common upgrades are far more likely to show up than the mechanic-changing rare
+// ones (Explosive/Chain/Bleed), same shape as Tamir Shooter's own weighted power-up pool (see compare.txt).
+// Plain relative weights, not percentages - RollUpgradeChoices in upgrades.c turns these into odds itself.
+#define RARITY_WEIGHT_COMMON 10
+#define RARITY_WEIGHT_UNCOMMON 4
+#define RARITY_WEIGHT_RARE 1
+
+// Explosion burst visual (purely cosmetic - the actual blast radius/damage above is unaffected).
+#define MAX_EXPLOSION_EFFECTS 16        // simultaneous fireball bursts on screen - plenty for a room this size
+#define EXPLOSION_EFFECT_LIFETIME 18    // frames the burst is visible before fading out (~0.3s at 60fps)
+#define EXPLOSION_EFFECT_VISUAL_SCALE 2.4f // drawn this many times EXPLOSIVE_RADIUS - the real hitbox is small on purpose, this just makes the blast readable
+
 // Floating "+Stat" popups (pickups, level-ups, room cleared)
 #define MAX_POPUP_TEXTS 8
 #define POPUP_TEXT_LIFETIME 60 // frames, ~1s at 60fps

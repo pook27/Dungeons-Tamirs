@@ -9,6 +9,7 @@ extern int pendingLevelUps;
 extern int awaitingUpgradeChoice;
 
 const char *UpgradeName(int upgradeType);
+const char *UpgradeDescription(int upgradeType, Stats *stats); // "current -> next" text for the choice screen
 void ApplyUpgrade(Sprite *player, int upgradeType);
 int ExpNeededForLevel(int level);
 void GrantExp(Sprite *player, int amount);

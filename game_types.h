@@ -2,7 +2,7 @@
 #define GAME_TYPES_H
 
 #include "raylib.h"
-#include "game_config.h"
+#include "constants.h"
 
 extern Font customFont; // loaded once in main(), used by every Draw*Text function across modules
 
@@ -35,6 +35,9 @@ enum UpgradeType {
 // Enemy behavioral variants (orthogonal to `elite`, a difficulty/loot multiplier, not a personality).
 enum EnemyVariant { ENEMY_NORMAL, ENEMY_FAST, ENEMY_TANK, ENEMY_VARIANT_COUNT };
 
+// How often an UpgradeType shows up in a level-up's 3 rolled choices - see upgradeRarity[] in upgrades.c.
+enum UpgradeRarity { RARITY_COMMON, RARITY_UNCOMMON, RARITY_RARE, RARITY_COUNT };
+
 // Drives the tank/boss "charger" AI. Chasers and weavers never leave AI_CHASE.
 enum EnemyAIState {
     AI_CHASE,   // closing the distance (or, for a charger, drifting into charge range)
@@ -47,10 +50,12 @@ enum EnemyAIState {
 typedef struct {
     Texture2D player;
     Texture2D enemyVariants[ENEMY_VARIANT_COUNT]; // indexed by EnemyVariant
-    Texture2D boss;
-    Texture2D bossAlt; // pure reskin - same stats/AI, just a coin-flip look
+    Texture2D boss1Frames[BOSS1_FRAME_COUNT]; // coin-flip skin A - see EnemySpawn.bossAlt / Sprite.bossAlt
+    Texture2D boss2Frames[BOSS2_FRAME_COUNT]; // coin-flip skin B
+    Texture2D shopkeepFrames[SHOPKEEP_FRAME_COUNT]; // loaded for the future shop room - not drawn anywhere yet
     Texture2D pot;
     Texture2D aura;
+    Texture2D explosion; // burst drawn at an Explosive blast's origin - see SpawnExplosionEffect in entities.c
     Texture2D background;
     Texture2D walls[3];
     Texture2D doorOpen;
@@ -104,6 +109,9 @@ typedef struct {
     int elite;         // ENEMY only: tougher, tinted gold, guaranteed pickup drop
     int variant;        // ENEMY only: EnemyVariant - speed/hp/damage profile
     int isBoss;         // ENEMY only
+    int bossAlt;        // ENEMY isBoss only: which animated skin (0 = Boss1/8 frames, 1 = Boss2/16 frames)
+    int animFrame;       // ENEMY isBoss only: current index into assets->boss1Frames/boss2Frames
+    int animTimer;        // ENEMY isBoss only: counts down ANIM_FRAME_DURATION between frame advances
     int staggerTimer;   // ENEMY only: frames left where chase AI is suspended after a dash hit
     int aiState;        // ENEMY only: EnemyAIState - only chargers (tank/boss) leave AI_CHASE
     int aiTimer;        // ENEMY only: frames left in the current aiState

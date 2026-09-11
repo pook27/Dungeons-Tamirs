@@ -19,5 +19,6 @@ float EnemyHpMult(int variant); // used by LoadRoom to scale a spawn's maxhp
 void move(Sprite *s);            // input, dash, and screen-edge clamp for a controllable sprite (currently just the player)
 void Update(GameAssets *assets); // per-frame AI, physics, and all player/enemy/pickup/pot interactions
 void CleanUpSprites(void);       // swap-and-pop compaction over the sprite pool
+void DrawExplosionEffects(GameAssets *assets); // fireball bursts spawned by Explosive kills - call inside the camera transform
 
 #endif // ENTITIES_H

@@ -13,6 +13,43 @@ int hitStopTimer = 0;
 int screenShakeTimer = 0;
 int hitFlashTimer = 0;
 
+// Purely cosmetic burst drawn wherever an Explosive kill actually detonates - the AoE damage in KillEnemy
+// below fires immediately and doesn't wait on this, this is just so the player can *see* the blast happen.
+typedef struct { float x, y; int timer; } ExplosionEffect;
+static ExplosionEffect explosionEffects[MAX_EXPLOSION_EFFECTS];
+static int explosionEffectCount = 0;
+
+static void SpawnExplosionEffect(float x, float y) {
+    if (explosionEffectCount >= MAX_EXPLOSION_EFFECTS) return;
+    explosionEffects[explosionEffectCount++] = (ExplosionEffect){ x, y, EXPLOSION_EFFECT_LIFETIME };
+}
+
+static void UpdateExplosionEffects(void) {
+    for (int i = 0; i < explosionEffectCount; ) {
+        if (--explosionEffects[i].timer <= 0) {
+            explosionEffects[i] = explosionEffects[explosionEffectCount - 1];
+            explosionEffectCount--;
+        } else {
+            i++;
+        }
+    }
+}
+
+// Drawn from main.c, inside the same camera transform as everything else so it shakes/shifts with a hit.
+void DrawExplosionEffects(GameAssets *assets) {
+    for (int i = 0; i < explosionEffectCount; i++) {
+        ExplosionEffect *e = &explosionEffects[i];
+        float lifeRatio = (float)e->timer / EXPLOSION_EFFECT_LIFETIME; // 1 -> 0 over the burst's life
+
+        float destW = EXPLOSIVE_RADIUS * 2.0f * EXPLOSION_EFFECT_VISUAL_SCALE;
+        float destH = destW * ((float)assets->explosion.height / (float)assets->explosion.width);
+        Rectangle srcRec = { 0, 0, (float)assets->explosion.width, (float)assets->explosion.height };
+        Rectangle destRec = { e->x, e->y, destW, destH };
+        Vector2 origin = { destW / 2.0f, destH / 2.0f };
+        DrawTexturePro(assets->explosion, srcRec, destRec, origin, 0.0f, Fade(WHITE, lifeRatio));
+    }
+}
+
 // Per-variant multipliers layered on top of the base ENEMY_MAX_SPEED/ENEMY_MAX_HP/CONTACT_DAMAGE constants.
 float EnemySpeedMult(int variant) {
     switch (variant) {
@@ -183,6 +220,7 @@ static void KillEnemy(GameAssets *assets, Sprite *player, Sprite *enemy) {
     if (enemy->elite && (rand() % 100 < ELITE_DROP_CHANCE)) SpawnPickup(assets, enemy->x, enemy->y);
 
     if (player->stats.explosiveLevel <= 0) return;
+    SpawnExplosionEffect(enemy->x, enemy->y);
     int blastDamage = player->stats.explosiveLevel * EXPLOSIVE_DAMAGE_PER_LEVEL;
     for (int i = 0; i < spriteCount; i++) {
         Sprite *other = &sprites[i];
@@ -233,13 +271,26 @@ static void ApplyChainStrikes(GameAssets *assets, Sprite *player, Sprite *enemy)
     }
 }
 
+static void UpdateBossAnimation(Sprite *s, GameAssets *assets) {
+    int frameCount = s->bossAlt ? BOSS2_FRAME_COUNT : BOSS1_FRAME_COUNT;
+    if (--s->animTimer <= 0) {
+        s->animTimer = ANIM_FRAME_DURATION;
+        s->animFrame = (s->animFrame + 1) % frameCount;
+    }
+    s->texture = s->bossAlt ? assets->boss2Frames[s->animFrame] : assets->boss1Frames[s->animFrame];
+}
+
 void Update(GameAssets *assets) {
+    UpdateExplosionEffects();
+
     for (int i = 0; i < spriteCount; i++) {
         Sprite *s = &sprites[i];
         if (!s->active) continue;
         if (s->type != PLAYER && (s->roomRow != currentRoomRow || s->roomCol != currentRoomCol)) continue;
 
         if (s->type == ENEMY) {
+            if (s->isBoss) UpdateBossAnimation(s, assets); // runs every frame, on top of whatever AI branch fires below
+
             if (s->staggerTimer > 0) {
                 s->staggerTimer--;
                 s->ax = 0; s->ay = 0;

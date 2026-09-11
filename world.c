@@ -141,7 +141,7 @@ void InitRooms(void) {
                 room->enemySpawns[0].pos = (Vector2){ WIDTH / 2.0f, HEIGHT / 2.0f };
                 room->enemySpawns[0].elite = 1;
                 room->enemySpawns[0].isBoss = 1;
-                room->enemySpawns[0].variant = ENEMY_NORMAL; // irrelevant - LoadRoom always uses assets->boss/bossAlt for isBoss
+                room->enemySpawns[0].variant = ENEMY_NORMAL; // irrelevant - LoadRoom always uses assets->boss1Frames/boss2Frames for isBoss
                 room->enemySpawns[0].bossAlt = rand() % 2;
                 for (int i = 1; i < room->enemySpawnCount; i++) {
                     room->enemySpawns[i].pos.x = (float)(60 + rand() % (WIDTH - 120));
@@ -306,7 +306,22 @@ int TileTypeAt(Room *room, float worldX, float worldY) {
     return room->tiles[ty][tx];
 }
 
-// Axis-separated collision: check the sprite's leading edge against the tile there, undo that axis if blocked.
+// Samples 3 points along a leading edge instead of just its midpoint - top/mid/bottom of a vertical edge,
+// left/mid/right of a horizontal one. The old single-point test could let a sprite graze past a wall corner
+// that only its middle happened to miss; this catches that without a full swept-AABB rewrite. The 1px inset
+// off each end keeps the sample points on the sprite's actual edge rather than spilling into its neighbor's.
+static int EdgeBlocked(Room *room, float edgeX, float edgeY, float halfW, float halfH, int vertical) {
+    if (vertical) {
+        return IsBlockingTile(TileTypeAt(room, edgeX, edgeY - halfH + 1.0f)) ||
+               IsBlockingTile(TileTypeAt(room, edgeX, edgeY)) ||
+               IsBlockingTile(TileTypeAt(room, edgeX, edgeY + halfH - 1.0f));
+    }
+    return IsBlockingTile(TileTypeAt(room, edgeX - halfW + 1.0f, edgeY)) ||
+           IsBlockingTile(TileTypeAt(room, edgeX, edgeY)) ||
+           IsBlockingTile(TileTypeAt(room, edgeX + halfW - 1.0f, edgeY));
+}
+
+// Axis-separated collision: check the sprite's leading edge against the tiles there, undo that axis if blocked.
 void ResolveWallCollision(Sprite *s, Room *room) {
     float scale = GetSpriteScale(s->texture);
     float halfW = ((float)s->texture.width * scale) / 2.0f;
@@ -315,10 +330,10 @@ void ResolveWallCollision(Sprite *s, Room *room) {
     float prevY = s->y - s->vy;
 
     float leadingX = s->x + (s->vx > 0 ? halfW : -halfW);
-    if (IsBlockingTile(TileTypeAt(room, leadingX, prevY))) { s->x = prevX; s->vx = 0; }
+    if (EdgeBlocked(room, leadingX, prevY, halfW, halfH, 1)) { s->x = prevX; s->vx = 0; }
 
     float leadingY = s->y + (s->vy > 0 ? halfH : -halfH);
-    if (IsBlockingTile(TileTypeAt(room, s->x, leadingY))) { s->y = prevY; s->vy = 0; }
+    if (EdgeBlocked(room, s->x, leadingY, halfW, halfH, 0)) { s->y = prevY; s->vy = 0; }
 }
 
 // Once every enemy in the room is dead, swap any closed doors open and mark the room cleared.
@@ -372,11 +387,13 @@ void LoadRoom(GameAssets *assets) {
     for (int i = 0; i < room->enemySpawnCount && spriteCount < MAX_SPRITES; i++) {
         Sprite *enemy = &sprites[spriteCount++];
         EnemySpawn spawn = room->enemySpawns[i];
-        Texture2D tex = spawn.isBoss ? (spawn.bossAlt ? assets->bossAlt : assets->boss) : assets->enemyVariants[spawn.variant];
+        Texture2D tex = spawn.isBoss ? (spawn.bossAlt ? assets->boss2Frames[0] : assets->boss1Frames[0]) : assets->enemyVariants[spawn.variant];
         *enemy = (Sprite){tex, spawn.pos.x, spawn.pos.y, 0, 0, 0, 0, 1, ENEMY};
         enemy->elite = spawn.elite;
         enemy->variant = spawn.variant;
         enemy->isBoss = spawn.isBoss;
+        enemy->bossAlt = spawn.bossAlt;
+        enemy->animTimer = ANIM_FRAME_DURATION; // animFrame starts at 0 via the initializer above
         enemy->sizeMult = spawn.isBoss ? BOSS_SIZE_MULT : 1.0f;
         float eliteMult = spawn.elite ? ELITE_HP_MULTIPLIER : 1;
         float bossMult = spawn.isBoss ? BOSS_HP_MULTIPLIER : 1;

@@ -3,7 +3,7 @@
 #include <time.h>
 #include "raylib.h"
 
-#include "game_config.h"
+#include "constants.h"
 #include "game_types.h"
 #include "assets.h"
 #include "world.h"
@@ -38,9 +38,11 @@ static void ResetGame(GameAssets *assets) {
 int main(void) {
     srand((unsigned int)time(NULL));
     int showDebugPanel = 0;
+    int paused = 0;
 
     InitWindow(WIDTH, HEIGHT, "Dungeons & Tamirs");
     SetTargetFPS(60);
+    SetExitKey(KEY_NULL); // ESC no longer closes the window by default - it's remapped to pause below
 
     GameAssets assets = LoadGameAssets(); // load every texture once, up front
     customFont = LoadFont("assets/Good-Game.ttf");
@@ -49,7 +51,15 @@ int main(void) {
     Sprite *player = &sprites[0]; // sprites[0] is always the player (see CleanUpSprites)
 
     while (!WindowShouldClose()) {
-        if (player->hp > 0) {
+        if (player->hp <= 0) {
+            if (IsKeyPressed(KEY_R)) {
+                ResetGame(&assets);
+                player = &sprites[0];
+            }
+        } else if (paused) {
+            // Frozen on purpose - no Update(), no timers ticking, no input handling. Only the ESC toggle
+            // below still runs every frame regardless of this branch, so unpausing always works.
+        } else {
             if (awaitingUpgradeChoice) {
                 HandleUpgradeChoiceInput(player);
             } else if (hitStopTimer > 0) {
@@ -61,6 +71,15 @@ int main(void) {
                 Room *room = &roomGrid[currentRoomRow][currentRoomCol];
                 UpdateDoors(room);
                 ResolveWallCollision(player, room);
+
+                // Enemies never got this before - they could walk (or get dash-knocked) straight through
+                // walls since nothing ever checked. Same function the player uses, just looped over enemies.
+                for (int i = 0; i < spriteCount; i++) {
+                    Sprite *s = &sprites[i];
+                    if (s->type == ENEMY && s->active && s->roomRow == currentRoomRow && s->roomCol == currentRoomCol) {
+                        ResolveWallCollision(s, room);
+                    }
+                }
 
                 // Whole floor cleared - descend instead of just running out of game.
                 if (AllRoomsCleared()) {
@@ -85,12 +104,15 @@ int main(void) {
             UpdatePopupTexts();
             if (hitFlashTimer > 0) hitFlashTimer--;
             if (screenShakeTimer > 0) screenShakeTimer--;
-        } else if (IsKeyPressed(KEY_R)) {
-            ResetGame(&assets);
-            player = &sprites[0];
         }
 
-        if (IsKeyPressed(KEY_TAB)) showDebugPanel = !showDebugPanel;
+        // ESC toggles pause - runs unconditionally (outside the branch above) so it isn't itself gated by
+        // `paused`, or unpausing would never fire. Doesn't apply once dead; R/restart owns that screen instead.
+        if (player->hp > 0 && IsKeyPressed(KEY_ESCAPE)) paused = !paused;
+
+        // TAB is disabled while paused - the stats panel is already forced on during pause (see the draw
+        // section below), so there's nothing for TAB to toggle there, and it stays out of the pause menu's way.
+        if (!paused && IsKeyPressed(KEY_TAB)) showDebugPanel = !showDebugPanel;
 
         BeginDrawing();
         ClearBackground(RAYWHITE);
@@ -138,6 +160,7 @@ int main(void) {
             DrawSprite(*s);
             if (s->type == ENEMY) DrawHealthBar(*s);
         }
+        DrawExplosionEffects(&assets); // inside BeginMode2D so bursts shake/shift with everything else
         EndMode2D();
 
         DrawExpBar(player);
@@ -156,7 +179,13 @@ int main(void) {
             DrawTextEx(customFont, msg, (Vector2){ WIDTH / 2.0f - msgSize.x / 2.0f, HEIGHT / 2.0f - 40.0f }, 48.0f, 1.0f, RED);
             DrawTextEx(customFont, hint, (Vector2){ WIDTH / 2.0f - hintSize.x / 2.0f, HEIGHT / 2.0f + 20.0f }, 20.0f, 1.0f, WHITE);
         }
-        if (showDebugPanel) DrawDebugPanel(player);
+        if (paused) DrawRectangle(0, 0, WIDTH, HEIGHT, Fade(BLACK, 0.5f));
+        if (showDebugPanel || paused) DrawDebugPanel(player); // forced on during pause, TAB can't hide it there
+        if (paused) {
+            const char *msg = "PAUSED";
+            Vector2 msgSize = MeasureTextEx(customFont, msg, 48.0f, 1.0f);
+            DrawTextEx(customFont, msg, (Vector2){ WIDTH / 2.0f - msgSize.x / 2.0f, HEIGHT / 2.0f - 24.0f }, 48.0f, 1.0f, WHITE);
+        }
         EndDrawing();
     }
 
