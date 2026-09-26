@@ -168,7 +168,7 @@
 // Explosion burst visual (purely cosmetic - the actual blast radius/damage above is unaffected).
 #define MAX_EXPLOSION_EFFECTS 16        // simultaneous fireball bursts on screen - plenty for a room this size
 #define EXPLOSION_EFFECT_LIFETIME 18    // frames the burst is visible before fading out (~0.3s at 60fps)
-#define EXPLOSION_EFFECT_VISUAL_SCALE 2.4f // drawn this many times EXPLOSIVE_RADIUS - the real hitbox is small on purpose, this just makes the blast readable
+#define EXPLOSION_EFFECT_VISUAL_SCALE 5.0f // drawn this many times EXPLOSIVE_RADIUS - the real hitbox is small on purpose, this just makes the blast readable
 
 // Floating "+Stat" popups (pickups, level-ups, room cleared)
 #define MAX_POPUP_TEXTS 8
