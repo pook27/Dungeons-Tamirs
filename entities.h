@@ -16,6 +16,10 @@ extern int hitFlashTimer;   // white flash on a kill
 
 float EnemyHpMult(int variant); // used by LoadRoom to scale a spawn's maxhp
 
+// Shared "advance frame every N ticks" helper for sprite-sheet animation loops - originally boss-only
+// (UpdateBossAnimation), now also driving the shop room's idle shopkeeper (see UpdateShopRoom in world.c).
+void AdvanceAnimFrame(int *animTimer, int *animFrame, int frameCount, int frameDuration);
+
 void move(Sprite *s);            // input, dash, and screen-edge clamp for a controllable sprite (currently just the player)
 void Update(GameAssets *assets); // per-frame AI, physics, and all player/enemy/pickup/pot interactions
 void CleanUpSprites(void);       // swap-and-pop compaction over the sprite pool

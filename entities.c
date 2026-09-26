@@ -198,15 +198,22 @@ static int IsActiveInRoom(Sprite *s, int type) {
     return s->type == type && s->active && s->roomRow == currentRoomRow && s->roomCol == currentRoomCol;
 }
 
-static void SpawnPickup(GameAssets *assets, float x, float y) {
+// Coins economy: elites (and the rare regular kill) drop these instead of a guaranteed upgrade pickup -
+// level-ups and the shop are the only two ways to gain upgrades now. See SpawnCoinPickup below.
+static void SpawnCoinPickup(GameAssets *assets, float x, float y, int value) {
     if (spriteCount >= MAX_SPRITES) return;
-    int upgradeType = rand() % UPGRADE_TYPE_COUNT;
-    Sprite *pickup = &sprites[spriteCount++];
-    *pickup = (Sprite){assets->upgradeIcons[upgradeType], x, y, 0, 0, 0, 0, 1, PICKUP};
-    pickup->upgradeType = upgradeType;
-    pickup->sizeMult = 1.0f;
-    pickup->roomRow = currentRoomRow;
-    pickup->roomCol = currentRoomCol;
+    Sprite *coin = &sprites[spriteCount++];
+    *coin = (Sprite){assets->coin, x, y, 0, 0, 0, 0, 1, COIN};
+    coin->coinValue = value;
+    coin->sizeMult = COIN_SIZE_MULT;
+    coin->roomRow = currentRoomRow;
+    coin->roomCol = currentRoomCol;
+}
+
+// Coin value scales with dungeonDepth, same shape as DEPTH_HP_GROWTH scales enemy hp - late-floor elites
+// pay out more instead of just being tougher for the same flat reward.
+static int EliteCoinValue(void) {
+    return (int)(ELITE_COIN_VALUE * powf(COIN_VALUE_DEPTH_GROWTH, (float)dungeonDepth));
 }
 
 static void DashHitEnemy(GameAssets *assets, Sprite *player, Sprite *enemy, float fromX, float fromY, int damage); // fwd decl - KillEnemy's explosion follow-up needs this first
@@ -217,7 +224,14 @@ static void KillEnemy(GameAssets *assets, Sprite *player, Sprite *enemy) {
     enemy->active = 0;
     hitFlashTimer = HIT_FLASH_DURATION;
     GrantExp(player, EXP_PER_KILL);
-    if (enemy->elite && (rand() % 100 < ELITE_DROP_CHANCE)) SpawnPickup(assets, enemy->x, enemy->y);
+
+    if (enemy->elite) {
+        if (rand() % 100 < ELITE_DROP_CHANCE) SpawnCoinPickup(assets, enemy->x, enemy->y, EliteCoinValue());
+    } else if (rand() % 100 < SCRAP_COIN_DROP_CHANCE) {
+        // Small chance for a regular kill to also drop a single scrap coin - otherwise an early,
+        // elite-less floor could leave the player broke outside the shop with nothing to spend.
+        SpawnCoinPickup(assets, enemy->x, enemy->y, SCRAP_COIN_VALUE);
+    }
 
     if (player->stats.explosiveLevel <= 0) return;
     SpawnExplosionEffect(enemy->x, enemy->y);
@@ -271,12 +285,18 @@ static void ApplyChainStrikes(GameAssets *assets, Sprite *player, Sprite *enemy)
     }
 }
 
+// Shared by any sprite-sheet animation loop that just cycles frames on a timer - the boss below, and the
+// shop room's idle shopkeeper (see UpdateShopRoom in world.c).
+void AdvanceAnimFrame(int *animTimer, int *animFrame, int frameCount, int frameDuration) {
+    if (--(*animTimer) <= 0) {
+        *animTimer = frameDuration;
+        *animFrame = (*animFrame + 1) % frameCount;
+    }
+}
+
 static void UpdateBossAnimation(Sprite *s, GameAssets *assets) {
     int frameCount = s->bossAlt ? BOSS2_FRAME_COUNT : BOSS1_FRAME_COUNT;
-    if (--s->animTimer <= 0) {
-        s->animTimer = ANIM_FRAME_DURATION;
-        s->animFrame = (s->animFrame + 1) % frameCount;
-    }
+    AdvanceAnimFrame(&s->animTimer, &s->animFrame, frameCount, ANIM_FRAME_DURATION);
     s->texture = s->bossAlt ? assets->boss2Frames[s->animFrame] : assets->boss1Frames[s->animFrame];
 }
 
@@ -394,6 +414,23 @@ void Update(GameAssets *assets) {
                 if (player->hp > player->maxhp) player->hp = player->maxhp;
                 SpawnPopupText("+Heal", player->x, player->y - 30.0f);
                 pot->active = 0;
+            }
+        }
+    }
+
+    // Player vs coin: touching one adds to the wallet - same shape as the pickup/pot loops above.
+    for (int i = 0; i < spriteCount; i++) {
+        Sprite *player = &sprites[i];
+        if (player->type != PLAYER || !player->active) continue;
+
+        for (int j = 0; j < spriteCount; j++) {
+            Sprite *coin = &sprites[j];
+            if (!IsActiveInRoom(coin, COIN)) continue;
+
+            if (WithinRadius(player, coin, PICKUP_RADIUS)) {
+                player->coins += coin->coinValue;
+                SpawnPopupText(TextFormat("+%d coins", coin->coinValue), player->x, player->y - 30.0f);
+                coin->active = 0;
             }
         }
     }

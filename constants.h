@@ -96,6 +96,24 @@
 #define ELITE_HP_MULTIPLIER 2 // elites have this many times normal enemy hp
 #define ELITE_DROP_CHANCE 100 // percent chance an elite drops a pickup on death (100 while testing)
 
+// Coins economy: elites pay out coins instead of a guaranteed upgrade pickup - level-ups and the shop are
+// now the only two ways to gain upgrades. Payout scales with dungeonDepth, same shape as DEPTH_HP_GROWTH
+// scales enemy hp, so late-floor elites are worth more.
+#define ELITE_COIN_VALUE 10        // base coins from an elite kill at depth 0
+#define COIN_VALUE_DEPTH_GROWTH 1.15f
+#define COIN_SIZE_MULT 0.5f        // draw + pickup-radius-feel scale for coin.png - GetSpriteScale sizes it to a full tile at 1.0
+#define SCRAP_COIN_DROP_CHANCE 8   // percent chance a *regular* (non-elite) kill drops a single scrap coin
+#define SCRAP_COIN_VALUE 2         // flat and small - just enough that an early, elite-less floor doesn't leave the player broke
+
+// Shop room: a base coin price per rarity tier, reusing the same tiers that already drive level-up odds
+// (see upgradeRarity[] in upgrades.c). Reroll cost climbs each use within a shop visit (see Room.shopRerollCount).
+#define SHOP_PRICE_COMMON 8
+#define SHOP_PRICE_UNCOMMON 16
+#define SHOP_PRICE_RARE 32
+#define SHOP_REROLL_BASE_COST 6
+#define SHOP_REROLL_COST_GROWTH 4
+#define SHOP_MIN_DISTANCE_FROM_START 2 // shop room must be at least this many rooms from start - never trivially adjacent to spawn
+
 // Enemy variants: same shape as the elite system (a multiplier layered on
 // top of the ENEMY_MAX_HP/ENEMY_MAX_SPEED/CONTACT_DAMAGE baseline), just
 // keyed by variant instead of a boolean. Sprites are Tamir Shooter's own
@@ -137,7 +155,7 @@
 // 1.png..16.png (Boss2), 1.png..25.png (ShopMan) - see LoadGameAssets in assets.c for the exact paths.
 #define BOSS1_FRAME_COUNT 8
 #define BOSS2_FRAME_COUNT 16
-#define SHOPKEEP_FRAME_COUNT 25 // loaded now so it's ready when the shop room lands - nothing draws it yet
+#define SHOPKEEP_FRAME_COUNT 25 // the shop room's idle loop - see UpdateShopRoom/DrawShopRoom in world.c
 #define ANIM_FRAME_DURATION 6   // game frames each animation frame holds for (60fps / 6 = ~10fps playback)
 
 // Upgrade rarity weights - common upgrades are far more likely to show up than the mechanic-changing rare

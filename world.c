@@ -2,8 +2,9 @@
 #include <stdlib.h>
 #include "world.h"
 #include "assets.h"   // GetSpriteScale, used by ResolveWallCollision
-#include "entities.h" // sprites[]/spriteCount + EnemyHpMult, for spawning this room's enemies
+#include "entities.h" // sprites[]/spriteCount + EnemyHpMult/AdvanceAnimFrame
 #include "ui.h"       // SpawnPopupText
+#include "upgrades.h" // RollUpgradeChoices/UpgradeRarity/ApplyUpgrade/UpgradeName/UpgradeDescription - shop room
 
 Room roomGrid[ROOM_GRID_ROWS][ROOM_GRID_COLS];
 int currentRoomRow = ROOM_GRID_ROWS / 2;
@@ -15,6 +16,173 @@ int dungeonDepth = 0;
 #define BOSS_MARK_COLOR (Color){ 232, 55, 90, 255 } // hot pink/red - marks the boss room's door and its minimap tile
 
 typedef struct { int r, c; } RoomCoord;
+
+// --- Shop room (ROOM_SHOP) ---------------------------------------------------------------------------
+// Layout is fixed/world-space, same idea as BOSS_MARK_COLOR above being a plain local define.
+#define SHOP_TABLE_Y (HEIGHT / 2.0f + 60.0f)             // table sits a bit below room center
+#define SHOP_KEEPER_POS (Vector2){ WIDTH / 2.0f, HEIGHT / 2.0f - 80.0f } // shopkeeper stands behind the table
+#define SHOP_ITEM_SPACING 110.0f                          // horizontal gap between the 3 item slots
+#define SHOP_ITEM_PROXIMITY 60.0f                         // how close the player must stand to buy/see a tooltip
+
+static int shopAnimFrame = 0;                 // shopkeeper idle-loop frame - module state, there's only ever one shopkeeper on screen
+static int shopAnimTimer = ANIM_FRAME_DURATION;
+
+static int ShopPriceForRarity(int rarity) {
+    switch (rarity) {
+        case RARITY_UNCOMMON: return SHOP_PRICE_UNCOMMON;
+        case RARITY_RARE:     return SHOP_PRICE_RARE;
+        default:                return SHOP_PRICE_COMMON;
+    }
+}
+
+// Rolls the table's 3 items and their prices - called once from InitRooms when a floor's shop room is set
+// up, so purchases/rerolls persist for the rest of that floor (see Room.shopRerollCount).
+static void RollShopRoom(Room *room) {
+    RollUpgradeChoices(room->shopItemType, 3);
+    for (int i = 0; i < 3; i++) {
+        room->shopItemPrice[i] = ShopPriceForRarity(UpgradeRarity(room->shopItemType[i]));
+        room->shopPurchased[i] = 0;
+    }
+    room->shopRerollCount = 0;
+}
+
+static Vector2 ShopItemSlotPos(int slot) {
+    float startX = WIDTH / 2.0f - SHOP_ITEM_SPACING;
+    return (Vector2){ startX + slot * SHOP_ITEM_SPACING, SHOP_TABLE_Y };
+}
+
+static int ShopRerollCost(Room *room) {
+    return SHOP_REROLL_BASE_COST + room->shopRerollCount * SHOP_REROLL_COST_GROWTH;
+}
+
+// Walk up to an unpurchased item and press E; R rerolls every still-unpurchased slot at a climbing cost.
+// A no-op whenever the current room isn't a shop, so it's safe to call unconditionally each active frame.
+void UpdateShopRoom(GameAssets *assets, Sprite *player) {
+    (void)assets; // the shopkeeper's texture is picked at draw time from shopAnimFrame - nothing to do here yet
+    Room *room = &roomGrid[currentRoomRow][currentRoomCol];
+    if (room->roomType != ROOM_SHOP) return;
+
+    AdvanceAnimFrame(&shopAnimTimer, &shopAnimFrame, SHOPKEEP_FRAME_COUNT, ANIM_FRAME_DURATION);
+
+    if (IsKeyPressed(KEY_E)) {
+        for (int i = 0; i < 3; i++) {
+            if (room->shopPurchased[i]) continue;
+            Vector2 slotPos = ShopItemSlotPos(i);
+            float dx = player->x - slotPos.x, dy = player->y - slotPos.y;
+            if (dx * dx + dy * dy > SHOP_ITEM_PROXIMITY * SHOP_ITEM_PROXIMITY) continue;
+
+            if (player->coins < room->shopItemPrice[i]) {
+                SpawnPopupText("Not enough coins", player->x, player->y - 30.0f);
+                break;
+            }
+            player->coins -= room->shopItemPrice[i];
+            room->shopPurchased[i] = 1; // sold out for the rest of this floor - not refilled
+            ApplyUpgrade(player, room->shopItemType[i]);
+            SpawnPopupText(UpgradeName(room->shopItemType[i]), player->x, player->y - 30.0f);
+            break;
+        }
+    }
+
+    if (IsKeyPressed(KEY_R)) {
+        int unpurchasedCount = 0;
+        for (int i = 0; i < 3; i++) if (!room->shopPurchased[i]) unpurchasedCount++;
+
+        if (unpurchasedCount == 0) {
+            // nothing left to reroll
+        } else if (player->coins < ShopRerollCost(room)) {
+            SpawnPopupText("Not enough coins", player->x, player->y - 30.0f);
+        } else {
+            player->coins -= ShopRerollCost(room);
+            room->shopRerollCount++;
+
+            int freshTypes[3];
+            RollUpgradeChoices(freshTypes, unpurchasedCount);
+            int freshIdx = 0;
+            for (int i = 0; i < 3; i++) {
+                if (room->shopPurchased[i]) continue;
+                room->shopItemType[i] = freshTypes[freshIdx++];
+                room->shopItemPrice[i] = ShopPriceForRarity(UpgradeRarity(room->shopItemType[i]));
+            }
+            SpawnPopupText("Rerolled!", player->x, player->y - 30.0f);
+        }
+    }
+}
+
+static void DrawShopKeeper(GameAssets *assets) {
+    Texture2D tex = assets->shopkeepFrames[shopAnimFrame];
+    float scale = 3*GetSpriteScale(tex);
+    float destW = (float)tex.width * scale;
+    float destH = (float)tex.height * scale;
+    Vector2 pos = SHOP_KEEPER_POS;
+    Rectangle srcRec = { 0.0f, 0.0f, (float)tex.width, (float)tex.height };
+    Rectangle destRec = { pos.x, pos.y, destW, destH };
+    Vector2 origin = { destW / 2.0f, destH / 2.0f };
+    DrawTexturePro(tex, srcRec, destRec, origin, 0.0f, WHITE);
+}
+
+static void DrawShopTable(GameAssets *assets) {
+    Texture2D tex = assets->table;
+    float scale = GetSpriteScale(tex) * 5.0f; // wider than one tile - spans the item row
+    float destW = (float)tex.width * scale;
+    float destH = (float)tex.height * scale;
+    Vector2 pos = { WIDTH / 2.0f, SHOP_TABLE_Y };
+    Rectangle srcRec = { 0.0f, 0.0f, (float)tex.width, (float)tex.height };
+    Rectangle destRec = { pos.x, pos.y, destW, destH };
+    Vector2 origin = { destW / 2.0f, destH / 2.0f };
+    DrawTexturePro(tex, srcRec, destRec, origin, 0.0f, WHITE);
+}
+
+// Table + shopkeeper + each unsold item's icon/price, plus a proximity tooltip (the level-up cards'
+// "current -> next" UpgradeDescription text doubles as this for free) and a reroll hint. A no-op for any
+// room that isn't the shop.
+void DrawShopRoom(Room *room, GameAssets *assets) {
+    if (room->roomType != ROOM_SHOP) return;
+
+    DrawShopTable(assets);
+    DrawShopKeeper(assets);
+
+    Sprite *player = &sprites[0]; // sprites[0] is always the player
+
+    for (int i = 0; i < 3; i++) {
+        Vector2 slotPos = ShopItemSlotPos(i);
+
+        if (room->shopPurchased[i]) {
+            const char *sold = "SOLD";
+            Vector2 soldSize = MeasureTextEx(customFont, sold, 14.0f, 1.0f);
+            DrawTextEx(customFont, sold, (Vector2){ slotPos.x - soldSize.x / 2.0f, slotPos.y - 8.0f }, 14.0f, 1.0f, Fade(GRAY, 0.8f));
+            continue;
+        }
+
+        Texture2D icon = assets->upgradeIcons[room->shopItemType[i]];
+        float iconSize = 40.0f;
+        float scale = iconSize / fmaxf((float)icon.width, (float)icon.height);
+        Rectangle srcRec = { 0.0f, 0.0f, (float)icon.width, (float)icon.height };
+        Rectangle destRec = { slotPos.x, slotPos.y - 24.0f, icon.width * scale, icon.height * scale };
+        Vector2 origin = { destRec.width / 2.0f, destRec.height / 2.0f };
+        DrawTexturePro(icon, srcRec, destRec, origin, 0.0f, WHITE);
+
+        const char *price = TextFormat("%d", room->shopItemPrice[i]);
+        Vector2 priceSize = MeasureTextEx(customFont, price, 14.0f, 1.0f);
+        DrawTextEx(customFont, price, (Vector2){ slotPos.x - priceSize.x / 2.0f, slotPos.y + 2.0f }, 14.0f, 1.0f, GOLD);
+
+        float dx = player->x - slotPos.x, dy = player->y - slotPos.y;
+        if (dx * dx + dy * dy < SHOP_ITEM_PROXIMITY * SHOP_ITEM_PROXIMITY) {
+            const char *name = UpgradeName(room->shopItemType[i]);
+            const char *desc = UpgradeDescription(room->shopItemType[i], &player->stats);
+            Vector2 nameSize = MeasureTextEx(customFont, name, 14.0f, 1.0f);
+
+            DrawRectangle((int)(slotPos.x - 72.0f), (int)(slotPos.y + 22.0f), 144, 58, Fade(BLACK, 0.7f));
+            DrawTextEx(customFont, name, (Vector2){ slotPos.x - nameSize.x / 2.0f, slotPos.y + 26.0f }, 14.0f, 1.0f, WHITE);
+            DrawTextEx(customFont, desc, (Vector2){ slotPos.x - 66.0f, slotPos.y + 44.0f }, 11.0f, 1.0f, LIGHTGRAY);
+            DrawTextEx(customFont, "[E] Buy", (Vector2){ slotPos.x - 22.0f, slotPos.y + 70.0f }, 11.0f, 1.0f, GOLD);
+        }
+    }
+
+    const char *rerollHint = TextFormat("[R] Reroll (%d coins)", ShopRerollCost(room));
+    Vector2 hintSize = MeasureTextEx(customFont, rerollHint, 13.0f, 1.0f);
+    DrawTextEx(customFont, rerollHint, (Vector2){ WIDTH / 2.0f - hintSize.x / 2.0f, SHOP_KEEPER_POS.y - 30.0f }, 13.0f, 1.0f, WHITE);
+}
+// -------------------------------------------------------------------------------------------------------
 
 // Grows a random, connected "blob" of rooms out from the center starting
 // square: repeatedly pick a random already-existing room and try to extend
@@ -82,6 +250,32 @@ static void GenerateFloorShape(void) {
 
     bossRoomRow = farthest.r;
     bossRoomCol = farthest.c;
+
+    // RoomType: everything in the blob defaults to combat, then start/boss overwrite the two rooms that
+    // already had a fixed convention. Shop is one other room from the blob, picked with a minimum BFS
+    // distance from start so it's never trivially adjacent to spawn.
+    for (int r = 0; r < ROOM_GRID_ROWS; r++)
+        for (int c = 0; c < ROOM_GRID_COLS; c++)
+            roomGrid[r][c].roomType = ROOM_COMBAT;
+
+    roomGrid[startR][startC].roomType = ROOM_START;
+    roomGrid[bossRoomRow][bossRoomCol].roomType = ROOM_BOSS;
+
+    RoomCoord shopCandidates[ROOM_GRID_ROWS * ROOM_GRID_COLS];
+    int shopCandidateCount = 0;
+    for (int i = 0; i < existingCount; i++) {
+        RoomCoord rc = existingList[i];
+        if (rc.r == startR && rc.c == startC) continue;
+        if (rc.r == bossRoomRow && rc.c == bossRoomCol) continue;
+        if (dist[rc.r][rc.c] < SHOP_MIN_DISTANCE_FROM_START) continue;
+        shopCandidates[shopCandidateCount++] = rc;
+    }
+    // No eligible room (a stalled/tiny generation) just means no shop this floor - everything else already
+    // defaulted to combat above, so there's nothing further to do.
+    if (shopCandidateCount > 0) {
+        RoomCoord shopRoom = shopCandidates[rand() % shopCandidateCount];
+        roomGrid[shopRoom.r][shopRoom.c].roomType = ROOM_SHOP;
+    }
 }
 
 void InitRooms(void) {
@@ -104,8 +298,9 @@ void InitRooms(void) {
                 }
             }
 
-            int isSafeRoom = (r == ROOM_GRID_ROWS / 2 && c == ROOM_GRID_COLS / 2);
-            int doorTile = isSafeRoom ? TILE_DOOR_OPEN : TILE_DOOR_CLOSED;
+            int isSafeRoom = (room->roomType == ROOM_START);
+            int isShopRoom = (room->roomType == ROOM_SHOP);
+            int doorTile = (isSafeRoom || isShopRoom) ? TILE_DOOR_OPEN : TILE_DOOR_CLOSED; // shop is safe too - no combat gate on its doors
 
             // A side only gets a door if that neighboring room actually exists this floor - otherwise it's a solid wall.
             if (r > 0 && roomGrid[r - 1][c].exists) {
@@ -125,7 +320,7 @@ void InitRooms(void) {
                 room->tiles[ROOM_TILE_ROWS / 2][ROOM_TILE_COLS - 1] = doorTile;                          // east
             }
 
-            room->cleared = isSafeRoom;
+            room->cleared = isSafeRoom || isShopRoom;
             room->visited = isSafeRoom; // prevents pots from spawning in the start room
 
             if (isSafeRoom) {
@@ -133,7 +328,13 @@ void InitRooms(void) {
                 continue;
             }
 
-            int isBossRoom = (r == bossRoomRow && c == bossRoomCol);
+            if (isShopRoom) {
+                room->enemySpawnCount = 0;
+                RollShopRoom(room); // rolled once per floor - purchases/rerolls persist across re-visits
+                continue;
+            }
+
+            int isBossRoom = (room->roomType == ROOM_BOSS);
 
             if (isBossRoom) {
                 // One real boss, plus 0-2 regular adds for room presence - not a whole pack of reskinned elites.
@@ -271,7 +472,7 @@ void DrawMinimap(void) {
     for (int r = 0; r < ROOM_GRID_ROWS; r++) {
         for (int c = 0; c < ROOM_GRID_COLS; c++) {
             Room *room = &roomGrid[r][c];
-            int isBoss = (r == bossRoomRow && c == bossRoomCol);
+            int isBoss = (room->roomType == ROOM_BOSS);
             int isCurrent = (r == currentRoomRow && c == currentRoomCol);
             float x = panelX + MINIMAP_PADDING + c * (cell + gap);
             float y = panelY + MINIMAP_PADDING + r * (cell + gap);
@@ -283,6 +484,7 @@ void DrawMinimap(void) {
 
             Color fill = room->cleared ? Fade(LIGHTGRAY, 0.9f) : Fade(GRAY, 0.9f);
             if (isBoss) fill = Fade(BOSS_MARK_COLOR, 0.9f);
+            else if (room->roomType == ROOM_SHOP) fill = Fade(GOLD, 0.9f);
 
             DrawRectangle((int)x, (int)y, (int)cell, (int)cell, fill);
             if (isCurrent) DrawRectangleLines((int)x - 1, (int)y - 1, (int)cell + 2, (int)cell + 2, YELLOW);
@@ -380,7 +582,7 @@ void LoadRoom(GameAssets *assets) {
 
     if (room->cleared) return;
 
-    int isBossRoom = (currentRoomRow == bossRoomRow && currentRoomCol == bossRoomCol);
+    int isBossRoom = (room->roomType == ROOM_BOSS);
     if (isBossRoom) SpawnPopupText("Boss Room!", sprites[0].x - 30.0f, sprites[0].y - 40.0f);
 
     float hpMult = powf(DEPTH_HP_GROWTH, (float)dungeonDepth);

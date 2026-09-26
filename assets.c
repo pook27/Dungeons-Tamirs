@@ -19,8 +19,10 @@ GameAssets LoadGameAssets(void) {
         assets.shopkeepFrames[i] = LoadTexture(TextFormat("assets/ShopMan/%d.png", i + 1));
     }
     assets.pot        = LoadTexture("assets/pot.png");
+    assets.coin        = LoadTexture("assets/coin.png");
+    assets.table       = LoadTexture("assets/table.png");
     assets.aura        = LoadTexture("assets/aura.png");
-    assets.explosion   = LoadTexture("assets/fireball.png");
+    assets.explosion   = LoadTexture("assets/explosion.png");
     assets.background = LoadTexture("assets/background.png");
 
     assets.walls[0]   = LoadTexture("assets/wall.png");
@@ -50,6 +52,8 @@ void UnloadGameAssets(GameAssets *assets) {
     for (int i = 0; i < BOSS2_FRAME_COUNT; i++) UnloadTexture(assets->boss2Frames[i]);
     for (int i = 0; i < SHOPKEEP_FRAME_COUNT; i++) UnloadTexture(assets->shopkeepFrames[i]);
     UnloadTexture(assets->pot);
+    UnloadTexture(assets->coin);
+    UnloadTexture(assets->table);
     UnloadTexture(assets->aura);
     UnloadTexture(assets->explosion);
     UnloadTexture(assets->background);

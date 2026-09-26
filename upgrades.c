@@ -46,6 +46,11 @@ static const char *RarityLabel(int rarity) {
     }
 }
 
+int UpgradeRarity(int upgradeType) {
+    if (upgradeType < 0 || upgradeType >= UPGRADE_TYPE_COUNT) return RARITY_COMMON;
+    return upgradeRarity[upgradeType];
+}
+
 const char *UpgradeName(int upgradeType) {
     switch (upgradeType) {
         case UPGRADE_MOVE_SPEED:   return "Run! Quickly!";
@@ -166,7 +171,8 @@ void GrantExp(Sprite *player, int amount) {
 
 // Fills out[0..count-1] with distinct UpgradeTypes, weighted by rarity so rare upgrades show up less often -
 // same swap-remove idiom as CleanUpSprites' swap-and-pop, just picking by weighted roll instead of rand()%poolSize.
-static void RollUpgradeChoices(int *out, int count) {
+// Exposed (not static) so the shop room's table can roll from the same pool - see RollShopRoom in world.c.
+void RollUpgradeChoices(int *out, int count) {
     int pool[UPGRADE_TYPE_COUNT];
     int weight[UPGRADE_TYPE_COUNT];
     int poolSize = UPGRADE_TYPE_COUNT;

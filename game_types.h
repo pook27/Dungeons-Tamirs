@@ -6,7 +6,12 @@
 
 extern Font customFont; // loaded once in main(), used by every Draw*Text function across modules
 
-enum SpriteType { PLAYER, ENEMY, PICKUP, POT };
+enum SpriteType { PLAYER, ENEMY, PICKUP, POT, COIN };
+
+// The room's architectural role - assigned once per floor in GenerateFloorShape (world.c) and branched on
+// everywhere a room used to need a scattered isSafeRoom/isBossRoom local (spawn logic, draw logic, minimap
+// coloring, interaction logic). Room for more types (Treasure, Shrine, Elite Den, Challenge...) to slot in later.
+enum RoomType { ROOM_START, ROOM_COMBAT, ROOM_BOSS, ROOM_SHOP, ROOM_TYPE_COUNT };
 
 enum TileType {
     TILE_FLOOR,
@@ -52,8 +57,10 @@ typedef struct {
     Texture2D enemyVariants[ENEMY_VARIANT_COUNT]; // indexed by EnemyVariant
     Texture2D boss1Frames[BOSS1_FRAME_COUNT]; // coin-flip skin A - see EnemySpawn.bossAlt / Sprite.bossAlt
     Texture2D boss2Frames[BOSS2_FRAME_COUNT]; // coin-flip skin B
-    Texture2D shopkeepFrames[SHOPKEEP_FRAME_COUNT]; // loaded for the future shop room - not drawn anywhere yet
+    Texture2D shopkeepFrames[SHOPKEEP_FRAME_COUNT]; // the shop room's idle-animated shopkeeper
     Texture2D pot;
+    Texture2D coin;  // coin pickups - see SpawnCoinPickup in entities.c
+    Texture2D table; // the shop room's item table
     Texture2D aura;
     Texture2D explosion; // burst drawn at an Explosive blast's origin - see SpawnExplosionEffect in entities.c
     Texture2D background;
@@ -78,6 +85,15 @@ typedef struct {
     int cleared;
     int visited;
     int exists; // part of this floor's generated shape? (see GenerateFloorShape) - if not, never entered/drawn/counted
+    int roomType; // RoomType - see enum RoomType. Assigned once per floor in GenerateFloorShape.
+
+    // Shop room state (roomType == ROOM_SHOP only) - mirrors how enemySpawns[] lives on Room above.
+    // Rolled once in InitRooms and persists for the whole floor (purchases/rerolls carry across visits,
+    // only reset when the floor regenerates).
+    int shopItemType[3];  // UpgradeType rolled for each of the table's 3 slots
+    int shopItemPrice[3]; // coin price for that slot, by rarity
+    int shopPurchased[3]; // 1 once that slot is bought - sold out for the rest of this floor, not refilled
+    int shopRerollCount;  // rerolls used this floor - each one raises the next reroll's cost
 } Room;
 
 // The player's upgradeable numbers - pickups, level-ups, and the debug panel all read/write this one struct.
@@ -120,11 +136,13 @@ typedef struct {
     int bleedTimer;      // ENEMY only: frames of bleed left; ticks every BLEED_TICK_FRAMES via modulo
     float sizeMult;      // draw scale + collision radius multiplier, 1.0 except the boss
     int upgradeType;      // PICKUP only: which UpgradeType this grants on collection
+    int coinValue;         // COIN only: amount added to the player's coins on contact - see SpawnCoinPickup
 
     int roomRow, roomCol;
 
     Stats stats; // PLAYER only
     int exp, level; // PLAYER only
+    int coins; // PLAYER only - the coins economy wallet, spent at the shop
 } Sprite;
 
 #endif // GAME_TYPES_H

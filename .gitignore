@@ -1,1 +1,4 @@
-game
+main
+mingw-toolchain.cmake
+build/
+dist/

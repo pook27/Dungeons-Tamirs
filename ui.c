@@ -120,6 +120,22 @@ void DrawExpBar(Sprite *player) {
     DrawStatBar((float)WIDTH - 200.0f - 10.0f, 10.0f, pct, SKYBLUE, TextFormat("Lv: %d", player->level));
 }
 
+// Sits just under the HP bar - the coins economy's only persistent readout outside the shop itself.
+void DrawCoinHud(Sprite *player, GameAssets *assets) {
+    Texture2D icon = assets->coin;
+    float iconSize = 22.0f;
+    float scale = iconSize / fmaxf((float)icon.width, (float)icon.height);
+    float x = 10.0f, y = 54.0f;
+
+    Rectangle srcRec = { 0.0f, 0.0f, (float)icon.width, (float)icon.height };
+    Rectangle destRec = { x + iconSize / 2.0f, y + iconSize / 2.0f, icon.width * scale, icon.height * scale };
+    Vector2 origin = { destRec.width / 2.0f, destRec.height / 2.0f };
+    DrawTexturePro(icon, srcRec, destRec, origin, 0.0f, WHITE);
+
+    const char *text = TextFormat("%d", player->coins);
+    DrawTextEx(customFont, text, (Vector2){ x + iconSize + 6.0f, y + 2.0f }, 18.0f, 1.0f, GOLD);
+}
+
 void DrawDebugPanel(Sprite *player) {
     int panelWidth = 220;
     DrawRectangle(0, 0, panelWidth, HEIGHT, Fade(BLACK, 0.6f));
@@ -128,6 +144,7 @@ void DrawDebugPanel(Sprite *player) {
     int lineHeight = 18;
     DrawTextEx(customFont, TextFormat("HP: %d / %d", player->hp, player->maxhp), (Vector2){ 10, y }, 16.0f, 1.0f, WHITE); y += lineHeight;
     DrawTextEx(customFont, TextFormat("Level %d  (%d/%d exp)", player->level, player->exp, ExpNeededForLevel(player->level)), (Vector2){ 10, y }, 16.0f, 1.0f, WHITE); y += lineHeight;
+    DrawTextEx(customFont, TextFormat("Coins: %d", player->coins), (Vector2){ 10, y }, 16.0f, 1.0f, GOLD); y += lineHeight;
     y += lineHeight / 2;
     DrawTextEx(customFont, TextFormat("Move Speed: %.2f", player->stats.moveSpeed), (Vector2){ 10, y }, 16.0f, 1.0f, YELLOW); y += lineHeight;
     DrawTextEx(customFont, TextFormat("Dash Damage: %d + %d", DASH_DAMAGE, player->stats.damage), (Vector2){ 10, y }, 16.0f, 1.0f, GREEN); y += lineHeight;

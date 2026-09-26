@@ -28,6 +28,7 @@ static void ResetGame(GameAssets *assets) {
     player->maxhp = PLAYER_MAX_HP;
     player->level = 1;
     player->exp = 0;
+    player->coins = 0;
     player->sizeMult = 1.0f;
     player->stats = (Stats){ MAX_MOVE_SPEED, 0, DASH_TIME, IFRAMES_DURATION, 0.0f, CONTACT_RADIUS_BONUS };
 
@@ -97,6 +98,7 @@ int main(void) {
 
                 if (TryChangeRoom(player)) LoadRoom(&assets);
                 move(player);
+                UpdateShopRoom(&assets, player); // no-op unless the current room is the shop
 
                 // Pop one queued level-up into an active choice screen; the rest wait until this one resolves.
                 if (pendingLevelUps > 0) StartUpgradeChoice();
@@ -127,6 +129,7 @@ int main(void) {
         BeginMode2D(camera);
         DrawTexture(assets.background, 0, 0, WHITE); // native res on purpose - no scaling to WIDTH/HEIGHT
         DrawRoom(&roomGrid[currentRoomRow][currentRoomCol], &assets, currentRoomRow, currentRoomCol);
+        DrawShopRoom(&roomGrid[currentRoomRow][currentRoomCol], &assets); // no-op unless the current room is the shop
 
         for (int i = 0; i < spriteCount; i++) {
             Sprite *s = &sprites[i];
@@ -165,6 +168,7 @@ int main(void) {
 
         DrawExpBar(player);
         DrawHpBar(player);
+        DrawCoinHud(player, &assets);
         DrawMinimap();
         DrawPopupTexts();
         if (hitFlashTimer > 0) DrawRectangle(0, 0, WIDTH, HEIGHT, Fade(WHITE, 0.5f * hitFlashTimer / HIT_FLASH_DURATION));

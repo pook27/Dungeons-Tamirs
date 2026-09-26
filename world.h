@@ -13,6 +13,10 @@ void LoadRoom(GameAssets *assets); // spawns the current room's enemies/pot the 
 void DrawRoom(Room *room, GameAssets *assets, int roomRow, int roomCol);
 void DrawMinimap(void);
 
+// Shop room (ROOM_SHOP) - both are no-ops when the current/given room isn't a shop.
+void UpdateShopRoom(GameAssets *assets, Sprite *player); // buy (E) / reroll (R) interaction + shopkeeper idle anim
+void DrawShopRoom(Room *room, GameAssets *assets);       // table, shopkeeper, item icons/prices, proximity tooltip
+
 int TryChangeRoom(Sprite *player); // returns 1 (and updates current room) if the player walked through a doorway
 void UpdateDoors(Room *room);      // opens the room's doors once its enemies are dead
 void ResolveWallCollision(Sprite *s, Room *room);
